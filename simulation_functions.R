@@ -1,0 +1,146 @@
+library(matrixStats)
+library(VGAM) # truncated Pareto distribution
+library(LaplacesDemon) # for logistic function
+library(Rcpp)
+sourceCpp("logsum.cpp")
+
+#######################
+# simulation 3.2 mh
+###########
+# static simulation settings
+Time <- 5e4
+A <- 2.5e7
+xi <- 2e-7
+n <- 10
+break_point <- 5
+
+########################
+# gamma lambdas
+Lambdastar_simulator <- function(n, pid, mu_star = 15, theta_star) {
+  ########
+  # step 2
+  ########
+  zeroindexes <- which(log(runif(n)) < log(pid))
+  Lambda_stars <- rgamma(n, 
+                         shape = mu_star^2 / theta_star, 
+                         rate = mu_star / theta_star)
+  Lambda_stars[zeroindexes] <- 0
+  
+  Lambda_stars
+}
+
+#######################
+# broken power law lambdas
+rbrokenpower <- function(n, pllocation_vec, plshape_vec = rep(1, m),
+                         m = length(pllocation_vec)) {
+  # a single broken power law distribution random number
+  rmixtruncpareto_single <- function(pllocation_vec, plshape_vec = rep(1, m),
+                                     m = length(pllocation_vec)) {
+    if (length(plshape_vec) != m)
+      stop("The length of shape parameters do not match the number of components")
+    
+    pltau_diff <- -plshape_vec[-m] * diff(log(pllocation_vec)) # Irina thesis equation 2.7
+    initial_logpjs <- sapply(pltau_diff, logminus, x = 0) + cumsum(pltau_diff)
+    last_logpj <- logminus(0, logplusvec(initial_logpjs))
+    mix_weights <- exp(c(initial_logpjs, last_logpj)) / sum(exp(c(initial_logpjs, last_logpj))) # normalize to even out computation error
+    mix_truncparetos <- rtruncpareto(n = m - 1, lower = pllocation_vec[-m], upper = pllocation_vec[-1], shape = plshape_vec[-m])
+    mix_pareto <- VGAM::rpareto(n = 1, scale = pllocation_vec[m], shape = plshape_vec[m])
+    mix_weights %*% c(mix_truncparetos, mix_pareto)
+  }
+  
+  replicate(n = n, expr = rmixtruncpareto_single(pllocation_vec, plshape_vec, m))
+}
+
+Lambdastar_simulator_brokenpower <- function(pid, pllocation_vec, plshape_vec) {
+  ########
+  # step 2
+  ########
+  zeroindexes <- which(log(runif(n)) < log(pid))
+  Lambda_stars <- rbrokenpower(n, pllocation_vec, plshape_vec)
+  Lambda_stars[zeroindexes] <- 0
+  
+  Lambda_stars
+}
+
+simulator <- function(n, Lambda_stars, xi_star) {
+  ########
+  # step 1
+  ########
+  X <- rpois(1, A * xi * Time)
+  
+  ########
+  # step 3
+  ########
+  Background <- rpois(n, xi_star)
+  Signal <- rpois(n, Lambda_stars)
+  Y <- Background + Signal
+  
+  c(Y, X)
+}
+
+###################
+# prior sampling functions
+###################
+source("kernel_functions.R")
+prior_sampling <- function(sample_size = 1, 
+                           muloc = 1.2e-6, thetaloc = 8.7e-12, 
+                           shape1 = 1, shape2 = 1,
+                           mu0 = 10^6 / (A * Time), theta0 = 10^18 / (A * Time)^2) {
+  # truncated Cauchy from Programs in R for Computing Truncated Cauchy Distributions, Saralees Nadarajah1 and Samuel Kotz (2007)
+  qtcauchy <- function(p, location = 0, scale = 1, a, b) {
+    second <- ifelse(missing(a), 0, pcauchy(q = a,location = location,scale = scale))
+    first <- ifelse(missing(b), 1, pcauchy(q = b,location = location,scale = scale))
+    qcauchy(second + p * (first - second),location = location,scale = scale)
+  }
+  rtcauchy = function(n,location=0,scale=1,a,b){qtcauchy(p = runif(n,min=0,max=1),location,scale,a,b)}
+  
+  # mu
+  mu_sample <- rtcauchy(n = sample_size, location = muloc, scale = 100 * muloc, a = 0)
+  # theta
+  theta_sample <- rtcauchy(n = sample_size, location = thetaloc, scale = 100 * thetaloc, a = 0)
+  # pid
+  pid_sample <- rbeta(n = sample_size, shape1 = shape1, shape2 = shape2)
+  # xi # too hard to sample from tiny gamma
+  uniflow <- 1
+  while (uniflow >= 1e-300) {
+    tgamma <- rgamma(n = min(1e6, sample_size * 1e3), shape = (mu0^2) / theta0, rate = mu0 / theta0)
+    uniflow <- max(min(tgamma[tgamma != 0]), .Machine$double.xmin) # giving the minimum probability value in the sampling.
+  } # this restricts the smallest rgamma value from being too small, hence stops them from being 0.
+  plowbound <- pgamma(q = uniflow, shape = (mu0^2) / theta0, rate = mu0 / theta0, log.p = TRUE)
+  xi_sample <- qgamma(p = log(runif(n = sample_size, min = exp(plowbound), max = 1)), 
+                      shape = (mu0^2) / theta0, rate = mu0 / theta0, log.p = TRUE)
+  
+  cbind(mu_sample, theta_sample, pid_sample, xi_sample)
+}
+# test
+prior_sampling(sample_size = 10)
+
+
+##############################
+# dynamic simulation settings
+##############################
+# gamma
+######################################
+# initial and true values
+pid = 0.5
+theta_star = 50
+xi_star = 15
+mu_star = 15
+a = unlist(xi_star * 100) # 100 from true values of Time and A
+R = 1 # modify for estimating Lambda, mu, theta
+e = 1 # modify for estimating Lambda, mu, theta
+mu = mu_star / (R * e * Time) # true value
+theta = theta_star / (R * e * Time)^2 # true value
+shape = mu^2 / theta
+rate = mu / theta
+
+# transform initial values
+t_mu = log(mu)
+t_theta = log(theta)
+t_pid = logit(pid)
+t_xi = log(xi)
+t_shape = log(shape)
+t_rate = log(rate)
+
+# broken power law
+################################
