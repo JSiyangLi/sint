@@ -1,0 +1,43 @@
+.mypy_cache/
+/.coverage
+/.nox/
+/.python-version
+/.pytype/
+/dist/
+/docs/_build/
+/src/*.egg-info/
+__pycache__/
+out*
+*.png
+.idea
+.ipynb_checkpoints
+*.h5
+*.json
+*.hdf5
+*.DS_Store
+*.coverage.*
+.idea
+*.h5
+studies/Rscripts/complete LISA PH/fp_for_Jason\
+*.csv
+*.zip
+*.txt
+*.nc
+Chains
+*.RData
+*.dta
+*.Rhistory
+*.gitattributes
+*.RDataTmp
+*.RDataTmp1
+*.yml
+*.pdf
+*.txt
+<<<<<<< HEAD
+.Rproj.user
+*.pdf
+
+=======
+*.pdf
+/studies/nested_sampling_lartillot/nested_sampling_lnzs.dat
+>>>>>>> 4bd9076b7b2414ae692d66982ee0786dfd3e6bba
