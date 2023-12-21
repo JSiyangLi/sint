@@ -36,7 +36,9 @@ Chains
 <<<<<<< HEAD
 .Rproj.user
 *.pdf
-
+*.Rapp.history
+point mass example and gamma parametrization.R
+*.RDS
 =======
 *.pdf
 /studies/nested_sampling_lartillot/nested_sampling_lnzs.dat
