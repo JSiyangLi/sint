@@ -144,3 +144,71 @@ t_rate = log(rate)
 
 # broken power law
 ################################
+# tests from numerical_integration
+###########
+numerical(log(mu_star), log(theta_star), t_pid, log(xi_star), #t_Lambda = -Inf,  
+          #t_Lambda = seq(-31, 31, by = 0.01), 
+          Lambda = seq(0, exp(7), by = 0.1),
+          #Lambda = 0,
+          x = 30, y = 0:3, A, Time, a, R, e = e)
+numerical(t_mu, t_theta, t_pid, t_xi, #t_Lambda = -Inf,  
+          #t_Lambda = seq(-31, 31, by = 0.01), 
+          Lambda = seq(0, 1, by = 1e-5),
+          #Lambda = 0,
+          x = 30, y = 0:25, A, Time, a, R, e = e)
+
+# example
+analytical(D = c(0:36, 250000), t_shape = t_shape, t_rate = t_rate, t_xi = t_xi, t_pid = t_pid, A = A, Time = Time, a = a, r = R, e = e)
+################
+# example of numerical methods accuracy
+#################
+# debug testing: integrate():
+test_integral <- function(Lambda, t_mu, t_theta, r, e, Time) {
+  mu <- exp(t_mu)
+  theta <- exp(t_theta)
+  shape <- mu^2 / theta
+  
+  exp((shape - 1) * log(Lambda) - Lambda * shape - r * e * Time * Lambda)
+}
+(i <- integrate(test_integral, lower = 0, upper = Inf, t_mu = t_mu, t_theta = t_theta, r = R, e = e, Time = Time))
+log(i$value)
+
+# numerical integration:
+l_test_integral <- function(t_mu, t_theta, t_pid, t_xi, Lambda, # Lambda > 0 needed
+                            x, y, A, Time, a, r, e) {
+  pid <- invlogit(t_pid)
+  xi <- exp(t_xi)
+  
+  o <- outer(y, Lambda[Lambda != 0], FUN = t_Lambda_gamma,
+             t_mu = t_mu, t_theta = t_theta, t_xi = t_xi, A = A, Time = Time, a = a, r = R, e = e)
+  io <- apply(o, 1, logplusvec) - log(ncol(o))
+  zeroinf <- log(pid) + dpois(y, lambda = a * xi * Time, log = TRUE)
+  nonzeroinf <- log(1 - pid) + io
+  sapply(1:length(zeroinf), function(i) logplus(zeroinf[i], nonzeroinf[i]))
+  
+  
+  # test
+  #list(t_Xlik(x, t_xi, A, Time),
+  #     io)
+}
+#l_test_integral(t_mu, t_theta, t_pid, t_xi, seq(0, 1e-0, by = 1e-7), 
+#                x = emcee_results_list$simulated_data[length(emcee_results_list$simulated_data)], y = emcee_results_list$simulated_data[-length(emcee_results_list$simulated_data)], 
+#                A = A, Time = Time, a = a, r = R, e = e)
+#plot(seq(0, 5e-4, by = 1e-8), exp(l_test_integral(seq(0, 5e-4, by = 1e-8), t_mu, t_theta, R, e, Time))) # the peak is around 7e-5
+# true value via Laplace:
+#test_inteana <- function(k = 0, t_mu, t_theta, r, e, Time) {
+#  mu <- exp(t_mu)
+#  theta <- exp(t_theta)
+#  shape <- mu^2 / theta
+
+#  ifelse((shape + k) > 0, lgamma(shape) + (-shape) * log(shape + r * e * Time), -Inf)
+#}
+#test_inteana(t_mu = t_mu, t_theta = t_theta, r = R, e = e, Time = Time)
+# LESSON: focus on the peak and don't include delta functions (that changes the weightening of the whole integral).
+
+
+##############
+# tests from kernel_functions
+################
+integrated_kernel(t_shape = t_shape, t_rate = t_rate, t_pid = t_pid, t_xi = t_xi, D = c(0:3, 30), A = A, Time = Time, a = a, r = R, e = e)
+

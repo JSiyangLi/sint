@@ -44,9 +44,6 @@ dtruncpareto <-
     if (log.arg) logdensity else exp(logdensity)
   }  # dtruncpareto
 
-#################################################################
-# posterior kernel
-#########
 
 #############
 # likelihood
@@ -69,6 +66,7 @@ loglik <- function(xi, Lambda,
 t_loglik <- function(t_xi, t_Lambda, D, A, Time, a, r, e) {
   xi <- exp(t_xi)
   Lambda <- exp(t_Lambda)
+  
   dpois(x = D[length(D)],
         A * Time * xi, 
         log = TRUE) +
@@ -126,7 +124,7 @@ integrated_kernel <- function(t_mu = NULL, t_theta = NULL,
                               analytical_method = TRUE, Lamba_seq = seq(0, exp(7), by = 0.1)) {
   # integral function: using analytical or numerical:
   integral <- ifelse(analytical_method,
-                     analytical(t_shape = t_shape, t_rate = t_rate, t_xi = t_xi, t_pid = t_pid, D = D, A = A, Time = Time, a = a, r = R, e = e),
+                     analytical(t_shape = t_shape, t_rate = t_rate, t_xi = t_xi, t_pid = t_pid, D = D, A = A, Time = Time, a = a, r = r, e = e),
                      numerical(t_mu, t_theta, t_pid, t_xi,
                                Lambda = Lambda_seq,
                                x = D[n + 1], y = D[1:n], A, Time, a, R, e = e))
@@ -141,16 +139,15 @@ integrated_kernel <- function(t_mu = NULL, t_theta = NULL,
       t_logthetahypprior(t_theta) +
       t_logxiprior_gamma(t_xi, mu0, theta0)
   }
-  
+
   integral + hyperpriors
 }
-integrated_kernel(t_shape = t_shape, t_rate = t_rate, t_pid = t_pid, t_xi = t_xi, D = c(0:3, 30), A = A, Time = Time, a = a, r = R, e = e)
 
 
-t_int_kernel_gamma <- function(obj, D, A, Time, a, R, e, mu_theta_param = FALSE)
+t_int_kernel_gamma <- function(obj, D, A, Time, a, R, e, mu_theta_param = TRUE)
   UseMethod("t_int_kernel_gamma")
 
-t_int_kernel_gamma.numeric <- function(zeta, D, A, Time, a, R, e, mu_theta_param = FALSE) {
+t_int_kernel_gamma.numeric <- function(zeta, D, A, Time, a, R, e, mu_theta_param = TRUE) {
   ll <- ifelse(mu_theta_param,
                integrated_kernel(t_mu = zeta[1],
                                  t_theta = zeta[2],
@@ -176,7 +173,7 @@ t_int_kernel_gamma.numeric <- function(zeta, D, A, Time, a, R, e, mu_theta_param
   ifelse(is.na(ll) || is.infinite(ll), -Inf, ll) # in case the function returns NaN, reject that point
 }
 
-t_int_kernel_gamma.matrix <- function(zeta, D, A, Time, a, R, e, mu_theta_param = FALSE) {
+t_int_kernel_gamma.matrix <- function(zeta, D, A, Time, a, R, e, mu_theta_param = TRUE) {
   apply(zeta, 1, t_int_kernel_gamma.numeric,
         D = D, A = A, Time = Time, a = a, R = R, e = e, mu_theta_param = mu_theta_param)
 }
@@ -189,13 +186,15 @@ t_int_kernel_gamma.matrix <- function(zeta, D, A, Time, a, R, e, mu_theta_param 
 logdeltafunction <- function(i) ifelse(i == 0, 0, -Inf)
 
 logLambdaprior_gamma <- function(Lambda,
-                                 mu, theta, pid)
+                                 mu, theta, pid) {
   sapply(Lambda, 
          function(i) logplus(log(pid) + logdeltafunction(i),
                              log(1 - pid) + dgamma(x = i,
                                                    shape = mu^2 / theta,
                                                    rate = mu / theta,
                                                    log = TRUE))) |> sum()
+}
+  
 logxiprior_gamma <- function(xi,
                              mu0, theta0)
   dgamma(xi, 
@@ -329,7 +328,7 @@ rgamma_transformed <- function(n, shape, rate) { # a function to sample from gam
   
   # beta to gamma: for V ~ gamma(1 + shape, rate), X = gbeta*V ~ gamma(shape, rate) and Y = (1-gbeta)*V ~ gamma(1, rate)
   lV <- log(rgamma(n, 1 + shape, rate))
-  Y <- lV + logminus(1, -gexp)
+  Y <- lV + sapply(-gexp, function(j) logminus(1, j))
   X <- lV - gexp
   c(X, Y)
 }
@@ -361,8 +360,8 @@ int_prior_transform <- function(u) { # must have some initial points that u[xi] 
   } else {
     muloc = 1.2 * 10^-6
     thetaloc = 8.7 * 10^-12
-    mu0 = 10^6 / (A * Time)
-    theta0 = 10^18 / (A * Time)^2
+    lmu0 = log(10^6) - log(A) - log(Time)
+    ltheta0 = log(10^18) - 2 * (log(A) + log(Time))
     
     umu <- LaplacesDemon::qtrunc(u[1], spec = "cauchy", location = muloc, scale = muloc * 100, a = 0)
     utheta <- LaplacesDemon::qtrunc(u[2], spec = "cauchy", location = thetaloc, scale = thetaloc * 100, a = 0)
@@ -390,7 +389,7 @@ prior_transform <- function(u) { # must have some initial points that u[xi] > 0.
     uxi <- qgamma_bounded(u[4], shape = exp(2 * lmu0 - ltheta0), rate = exp(lmu0 - ltheta0)) #|> log()
     #utxi <- qgamma_transformed(u[4], u[5], shape = exp(2 * lmu0 - ltheta0), rate = exp(lmu0 - ltheta0))
     
-    uLambda <- q0inf_gamma(u[-(1:5)], shape = exp(2 * log(umu) - log(utheta)), rate = exp(log(umu) - log(utheta)), pid = upid)
+    uLambda <- q0inf_gamma(u[-(1:4)], shape = exp(2 * log(umu) - log(utheta)), rate = exp(log(umu) - log(utheta)), pid = upid)
     
     c(umu, utheta, upid, uxi, 0, uLambda)
   }
@@ -405,7 +404,6 @@ loglik_transform <- function(t_xi, aux, Lambda,
   if (t_xi >= -.Machine$double.xmax && t_xi <= .Machine$double.xmax) {
     lfreq <- log(A) + log(Time) + t_xi
     lfreqa <- c(Time) * sapply(c(log(r)) + c(log(e)) + log(Lambda), logplus, y = log(a) + t_xi)
-    
     log_dpois(loglambda = lfreq, 
               x = D[length(D)]) +
       sum(log_dpois(loglambda = lfreqa,
@@ -422,8 +420,8 @@ integrated_likelihood_transform <- function(mu, theta, pid, t_xi, D,
   if (mu <= 0 || theta <= 0 || pid < 0 || pid > 1 || t_xi <= -.Machine$double.xmax || t_xi >= .Machine$double.xmax) {
     as.numeric(-1e100)
   } else {
-    t_shape = 2 * log(mu) - log(theta)
-    t_rate = log(mu) - log(theta)
+    t_theta =  log(theta)
+    t_mu = log(mu)
     t_pid = logit(pid)
     
     n = length(D) - 1
@@ -435,7 +433,7 @@ integrated_likelihood_transform <- function(mu, theta, pid, t_xi, D,
     theta0 = 10^18 / (A * Time)^2
     Lamba_seq = seq(0, exp(7), by = 0.1)
     
-    analytical(t_shape = t_shape, t_rate = t_rate, t_xi = t_xi, t_pid = t_pid, D = D, A = A, Time = Time, a = a, r = R, e = e)
+    analytical(t_mu = t_mu, t_theta = t_theta, t_xi = t_xi, t_pid = t_pid, D = D, A = A, Time = Time, a = a, r = R, e = e)
   }
 }
 

@@ -84,8 +84,9 @@ t_rate = r.t_rate
 
 # simulate data
 Lambda_stars = np.array(r.Lambdastar_simulator(n = n, pid = pid, theta_star = theta_star))
+np.random.seed(0)
 D = np.array(r.simulator(n = n, Lambda_stars = Lambda_stars, xi_star = xi_star))
-
+print(D)
 # posterior kernel in python
                                
 def t_log_postker_unified_gamma(zeta, # should be an np array
@@ -180,6 +181,7 @@ t_lambs = np.expand_dims(np.array(t_lambs), axis = -1)
 t_lambs = t_lambs.reshape((int(nwalkers), int(r.n)))
 
 t_init = np.hstack((turb_mu, turb_theta, turb_pid, turb_xi, t_lambs))
+print(t_init)
 
 # testing the posterior kernel function in python
 t_log_postker_unified_gamma(zeta = t_init, D = D)

@@ -1,159 +1,114 @@
-import LaplacesDemon
-import matrixStats
-import cubature
-import Rcpp
-from scipy.stats import truncexpon, poisson, gamma
+from scipy.stats import poisson, gamma
+from scipy.special import gammaln, expit
+import sys
 import numpy as np
+from rpy2.robjects.packages import importr
+utils = importr('utils')
+base = importr('base')
+stats = importr('stats')
 
-# Reading relevant functions and simulation settings
-# source(paste0(getwd(), "/kernel_functions.R"))
-# source(paste0(getwd(), "/simulation_functions.R"))
+def logplus(x, y):
+    if x > y:
+        return x + np.log(1.0 + np.exp(y - x))
+    else:
+        return y + np.log(1.0 + np.exp(x - y))
 
-# Reading the emcee posterior sample
-emcee_results_list = LaplacesDemon.readRDS(file="/simple/emcee/results/emcee_result.RDS")
-print(type(emcee_results_list$posterior_sample))
+def logplusvec(x):
+    n = len(x)
+    r = -sys.float_info.max
 
-################
-# Posterior kernel
-################
+    for i in range(n):
+        r = logplus(r, x[i])
 
-def t_Xlik(x, t_xi, A, Time):
+    return r
+
+def logminus(x, y):
+    if x >= y:
+        return x + np.log(1.0 - np.exp(y - x))
+    else:
+        return float('nan')
+
+def logdeltafunction(i): # pass
+    return 0 if i == 0 else -np.inf
+
+
+def t_Xlik(x, t_xi, A, Time): # pass
     xi = np.exp(t_xi)
     return poisson.logpmf(x, A * Time * xi)
 
-def t_Lambda_ker(y, Lambda, t_mu, t_theta, t_pid, t_xi, A, Time, a, r, e):
-    mu = np.exp(t_mu)
-    theta = np.exp(t_theta)
-    pid = LaplacesDemon.invlogit(t_pid)
+
+def t_Lambda_ker(y, Lambda, t_mu, t_theta, t_pid, t_xi, A, Time, a, r, e): # pass
+    pid = 1 / (1 + np.exp(-t_pid))
     xi = np.exp(t_xi)
+    # Jacobian calculation is not needed for Lambda
+    def prior_func(y):
+        return logplus(np.log(pid) + logdeltafunction(y),
+                       np.log(1 - pid) + gamma.logpdf(y, a=np.exp(2 * t_mu - t_theta), scale=np.exp(t_theta - t_mu), loc=0))
+    lprior = [prior_func(j) for j in Lambda]
+    llike = [poisson.logpmf(y_l, (a * xi + r * e * Lambda_l) * Time) for y_l, Lambda_l in zip(y, Lambda)]
+    output = np.add(lprior, llike)
+    return output
 
-    log_likelihood = poisson.logpmf(y, (a * xi) + (r * e * Lambda) * Time)
 
-    jacobian = np.log(pid) + LaplacesDemon.logdeltafunction(Lambda) + \
-                np.log(1 - pid) + gamma.logpdf(Lambda, a=np.exp(2 * t_mu - t_theta), scale=np.exp(t_mu - t_theta))
-
-    return log_likelihood + jacobian
-
-def t_Lambda_gamma(y, Lambda, t_mu, t_theta, t_xi, A, Time, a, r, e):
+def t_Lambda_gamma(y, Lambda, t_mu, t_theta, t_xi, Time, a, r, e): # pass
     lshape = 2 * t_mu - t_theta
     lrate = t_mu - t_theta
     xi = np.exp(t_xi)
 
-    lprior = gamma.logpdf(Lambda, a=np.exp(lshape), scale=np.exp(lrate))
-    llike = poisson.logpmf(y, (a * xi) + (r * e * Lambda) * Time)
+    if not isinstance(Lambda, list):
+        Poisrate = float((a * xi + r * e * Lambda) * Time)
+    else:
+        Poisrate = [(a * xi + r * e * Lambda_j) * Time_j for Lambda_j, Time_j in zip(Lambda, Time)]
 
-    return lprior + llike
+    lprior = gamma.logpdf(Lambda, a=np.exp(lshape), scale=np.exp(-lrate), loc=0)
+    llike = stats.dpois(float(y), Poisrate, log = True)
+    return np.add(lprior, np.array(llike))
 
-#################
-# Numerical integration
-#################
-
-def numerical(t_mu, t_theta, t_pid, t_xi, Lambda, x, y, A, Time, a, r, e):
-    pid = LaplacesDemon.invlogit(t_pid)
+#########
+# numerical integration
+#########
+def numerical(t_mu, t_theta, t_pid, t_xi, Lambda, x, y, A, Time, a, r, e): # pass
+    pid = 1 / (1 + np.exp(-t_pid))
     xi = np.exp(t_xi)
 
-    o = np.array([t_Lambda_gamma(y, Lambda[Lambda != 0], t_mu, t_theta, t_xi, A, Time, a, r, e) for Lambda_i in Lambda[Lambda != 0]])
-    io = matrixStats.logsumexp(o, axis=1) - np.log(o.shape[1])
+    def ut_Lambda_gamma(y, Lambda):
+        return t_Lambda_gamma(y, Lambda, t_mu, t_theta, t_xi, Time, a, r, e)
+    u_Lambda_gamma = np.frompyfunc(ut_Lambda_gamma, 2, 1)
+    o = u_Lambda_gamma.outer(y, [num for num in Lambda if num]) # the output is a transpose of the outer() by R
+    into = np.apply_along_axis(logplusvec, axis=1, arr=o) - np.log(o.shape[1])
 
-    zeroinf = np.log(pid) + poisson.logpmf(y, lambda=a * xi * Time)
-    nonzeroinf = np.log(1 - pid) + io
+    zeroinf = np.log(pid) + poisson.logpmf(y, a * xi * Time)
+    nonzeroinf = np.log(1 - pid) + into
 
-    return t_Xlik(x, t_xi, A, Time) + np.sum(np.vectorize(matrixStats.logsumexp)(zeroinf, nonzeroinf))
+    return np.add(t_Xlik(x, t_xi, A, Time), np.sum([logplus(zero_i, nonzero_i) for zero_i, nonzero_i in zip(zeroinf, nonzeroinf)]))
 
-# Example usage
-numerical(np.log(mu_star), np.log(theta_star), t_pid, np.log(xi_star),
-          np.arange(0, 7, 0.1),
-          x=30, y=np.arange(0, 3), A=A, Time=Time, a=a, r=R, e=e)
-numerical(t_mu, t_theta, t_pid, t_xi,
-          np.arange(0, 1, 1e-5),
-          x=30, y=np.arange(0, 25), A=A, Time=Time, a=a, r=R, e=e)
+def analytical(t_mu=None, t_theta=None, t_pid=None, t_xi=None,
+               D=None, A=None, Time=None, a=None, r=None, e=None): # pass
+    # reshape formal arguments
+    X = D[-1]
+    Y = D[:-1]
 
-##########################
-# Analytical solution
-##########################
-
-def analytical(t_mu=None, t_theta=None, t_shape=2 * t_mu - t_theta,
-               t_rate=t_mu - t_theta, t_pid=None, t_xi=None,
-               D=None, n=None, A=None, Time=None, a=None, r=None, e=None):
-    X = D[n + 1]
-    Y = D[0:n]
-
+    t_shape = 2 * t_mu - t_theta
+    t_rate = t_mu - t_theta
+    # construction
     def summand(yi, k, t_shape, t_rate, t_xi, Time, a, r, e):
-        lcombination = np.sum([LaplacesDemon.lfactorial(yi) - LaplacesDemon.lfactorial(k) - LaplacesDemon.lfactorial(yi - k)])
+        lcombination = gammaln(yi + 1) - (gammaln(k + 1) + gammaln(yi - k + 1))
         lpowers = (yi - k) * (np.log(a) + t_xi + np.log(Time)) + k * (np.log(r) + np.log(e) + np.log(Time))
-        llaplace = gamma.logpdf(np.exp(t_shape) + k, a=np.exp(t_shape), scale=-np.exp(t_shape - t_rate - np.log(r) - np.log(e) - np.log(Time)))
-        return lcombination + lpowers + llaplace
+        llaplace = gammaln(np.exp(t_shape) + k) + (-np.exp(t_shape) - k) * (np.logaddexp(t_rate, np.log(r) + np.log(e) + np.log(Time)))
+        return lcombination + lpowers + np.where((np.exp(t_shape) + k) > 0, llaplace, -np.inf)  # the condition of Laplace transform
 
     def prodant(yi, t_shape, t_rate, t_xi, t_pid, Time, a, r, e):
-        pid = LaplacesDemon.invlogit(t_pid)
-        lpois = -a * np.exp(t_xi) * Time - LaplacesDemon.lfactorial(yi)
+        pid = expit(t_pid)
+
+        lpois = -a * np.exp(t_xi) * Time - gammaln(yi + 1)
         l0inf = yi * (np.log(a) + t_xi + np.log(Time)) + np.log(pid)
-        sums = np.log(1 - pid) + np.exp(t_shape) * (t_rate) - gamma.logpdf(np.exp(t_shape)) + \
-               LaplacesDemon.logsumexp(np.vectorize(summand)(yi, np.arange(0, yi + 1), np.full_like(t_shape, t_shape),
-                                                            np.full_like(t_rate, t_rate), np.full_like(t_xi, t_xi),
-                                                            np.full_like(Time, Time), np.full_like(a, a), np.full_like(r, r),
-                                                            np.full_like(e, e)), axis=1)
-        return lpois + LaplacesDemon.logplus(l0inf, sums)
+        sums = np.log(1 - pid) + np.exp(t_shape) * t_rate - gammaln(np.exp(t_shape)) + \
+            logplusvec(summand(yi, np.arange(yi + 1), t_shape, t_rate, t_xi, Time, a, r, e))
+        return lpois + logplus(l0inf, sums)
 
     def prodant_vec(Y, t_shape, t_rate, t_xi, t_pid, Time, a, r, e):
-        return np.vectorize(prodant)(Y, np.full_like(t_shape, t_shape), np.full_like(t_rate, t_rate),
-                                     np.full_like(t_xi, t_xi), np.full_like(t_pid, t_pid), np.full_like(Time, Time),
-                                     np.full_like(a, a), np.full_like(r, r), np.full_like(e, e))
+        return np.array([prodant(yi, t_shape, t_rate, t_xi, t_pid, Time, a, r, e) for yi in Y])
 
-    return poisson.logpmf(X, A * Time * np.exp(t_xi)) + np.sum(prodant_vec(Y, t_shape, t_rate, t_xi, t_pid, Time, a, r, e))
+    return (np.sum(prodant_vec(Y, t_shape, t_rate, t_xi, t_pid, Time, a, r, e)) +
+            poisson.logpmf(X, A * Time * np.exp(t_xi)))
 
-# Example usage
-analytical(t_shape=t_shape, t_rate=t_rate, t_xi=t_xi, t_pid=t_pid,
-           D=emcee_results_list$simulated_data, n=len(emcee_results_list$simulated_data) - 1,
-           A=A, Time=Time, a=a, r=R, e=e)
-
-################
-# Example of numerical methods accuracy
-################
-
-# Debug testing: integrate()
-def test_integral(Lambda, t_mu, t_theta, r, e, Time):
-    mu = np.exp(t_mu)
-    theta = np.exp(t_theta)
-    shape = mu ** 2 / theta
-    return np.exp((shape - 1) * np.log(Lambda) - Lambda * shape - r * e * Time * Lambda)
-
-i = cubature.integrate(test_integral, np.array([0]), np.array([np.inf]), args=(t_mu, t_theta, R, e, Time))
-print(np.log(i[0]))
-
-# Numerical integration
-def l_test_integral(t_mu, t_theta, t_pid, t_xi, Lambda, x, y, A, Time, a, r, e):
-    pid = LaplacesDemon.invlogit(t_pid)
-    xi = np.exp(t_xi)
-
-    o = np.array([t_Lambda_gamma(y, Lambda[Lambda != 0], t_mu, t_theta, t_xi, A, Time, a, r, e) for Lambda_i in Lambda[Lambda != 0]])
-    io = matrixStats.logsumexp(o, axis=1) - np.log(o.shape[1])
-
-    zeroinf = np.log(pid) + poisson.logpmf(y, lambda=a * xi * Time)
-    nonzeroinf = np.log(1 - pid) + io
-
-    return np.vectorize(LaplacesDemon.logplus)(zeroinf, nonzeroinf)
-
-l_test_integral(t_mu, t_theta, t_pid, t_xi, np.arange(0, 1e-0, 1e-7),
-                x=emcee_results_list$simulated_data[len(emcee_results_list$simulated_data) - 1],
-                y=emcee_results_list$simulated_data[0:len(emcee_results_list$simulated_data) - 1],
-                A=A, Time=Time, a=a, r=R, e=e)
-
-# Plotting
-# plot(seq(0, 5e-4, by = 1e-8), exp(l_test_integral(seq(0, 5e-4, by = 1e-8), t_mu, t_theta, R, e, Time)))
-# The peak is around 7e-5
-# True value via Laplace:
-# test_inteana <- function(k = 0, t_mu, t_theta, r, e, Time) {
-#   mu <- exp(t_mu)
-#   theta <- exp(t_theta)
-#   shape <- mu^2 / theta
-#
-#   ifelse((shape + k) > 0, lgamma(shape) + (-shape) * log(shape + r * e * Time), -Inf)
-# }
-# test_inteana(t_mu = t_mu, t_theta = t_theta, r = R, e = e, Time = Time)
-# LESSON: Focus on the peak and don't include delta functions (that changes the weighting of the whole integral).
-
-##################
-# Complete integrated kernel (partial marginal likelihood)
-##################
-# Remaining code for the integrated kernel is not provided.

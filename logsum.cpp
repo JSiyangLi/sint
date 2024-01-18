@@ -13,7 +13,6 @@ using namespace std;
 //   http://gallery.rcpp.org/
 //
 
-// [[Rcpp::export]]
 double logplus(double x, double y){
   
   if(x>y){
@@ -27,7 +26,7 @@ double logplus(double x, double y){
   }
   
 }
-// [[Rcpp::export]]
+
 double logplusvec(vector<double> & x){
   
   int n = x.size();
@@ -43,7 +42,7 @@ double logplusvec(vector<double> & x){
   return r;
   
 }
-// [[Rcpp::export]]
+
 double logminus(double x, double y){
   
   if(x>=y){
@@ -77,4 +76,8 @@ extern "C" {
     double py_logminus(double x, double y){
         return logminus(x, y);
     }
-}
+
+    void free_memory(char* ptr){
+        free(ptr);
+    }
+};
