@@ -1,0 +1,2980 @@
+---
+title: "source_intensities_posterior"
+author: "Siyang Li"
+date: "2023-10-02"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+#library(knitr)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r postkernel}
+library(coda)
+library(tictoc)
+library(ks)
+source(paste0(getwd(), "/kernel_functions.R"))
+```
+
+```{r simulation3.2_mh}
+source(paste0(getwd(), "/simulation_functions.R"))
+```
+
+```{r python_settings}
+##################
+# first time, run:
+#conda_create(envname = "source_intensities")
+#conda_install("source_intensities", "numpy")
+#conda_install("source_intensities", "emcee")
+#conda_install("source_intensities", "matplotlib")
+#conda_install("source_intensities", "tqdm")
+#conda_install("source_intensities", "h5py")
+#conda_install("source_intensities", "scipy")
+#conda_install("source_intensities", "dynesty")
+#system("pip install ultranest")
+#system("pip install pyreadr")
+
+###############
+# python set up
+###############
+# if import/config says modules can't be found, run the next two lines (modify paths):
+Sys.setenv(PATH=paste("/Users/jl1023/anaconda3/envs/source_intensities", Sys.getenv()["PATH"],sep=";"))
+#Sys.setenv(RETICULATE_PYTHON = "C:/Users/14356/Anaconda2+1/envs/source_intensities/python.exe")
+library(reticulate)
+use_condaenv("source_intensities") # ignore the warning
+py_discover_config(required_module = "emcee") # check modules
+py_discover_config(required_module = "tqdm")
+py_discover_config(required_module = "h5py")
+py_discover_config(required_module = "dynesty")
+py_discover_config(required_module = "scipy")
+py_discover_config(required_module = "ultranest")
+py_discover_config(required_module = "pyreadr")
+#np <- import("numpy", as = "np")
+#emcee <- import("emcee")
+#tqdm <- import("tqdm")
+#emcee <- import("emcee", as = "dy")
+```
+
+```{python sampler_setup}
+import numpy as np
+import warnings
+import sys
+from scipy.stats import gamma
+#import matplotlib.pyplot as plt
+
+# initial and true values
+pid = r.pid
+theta_star = r.theta_star
+xi_star = r.xi_star
+mu_star = r.mu_star
+Time = int(r.Time)
+A = int(r.A)
+a = r.a # 100 from true values of Time and A
+R = r.R # modify for estimating Lambda, mu, theta
+e = r.e # modify for estimating Lambda, mu, theta
+n = r.n
+mu = r.mu # true value
+theta = r.theta # true value
+shape = r.shape
+rate = r.rate
+xi = r.xi
+
+# transform initial values
+t_mu = r.t_mu
+t_theta = r.t_theta
+t_pid = r.t_pid
+t_xi = r.t_xi
+t_shape = r.t_shape
+t_rate = r.t_rate
+
+# simulate data
+Lambda_stars = np.array(r.Lambdastar_simulator(n = n, pid = pid, theta_star = theta_star))
+np.random.seed(0)
+D = np.array(r.simulator(n = n, Lambda_stars = Lambda_stars, xi = xi))
+print(D)
+# posterior kernel in python
+                               
+def t_log_postker_unified_gamma(zeta, # should be an np array
+                             D = D, A = A, Time = Time, 
+                              a = a,
+                              R = R,
+                              e = e
+                              #means = None, stds = None
+                             ):
+    # reshape the parameter space input if necessary
+    if len(np.shape(zeta)) == 1:
+      zeta = zeta.reshape((1, len(zeta)))
+    
+    D = np.array(D)
+    A = np.array(A)
+    Time = np.array(Time)
+    a = np.array(a)
+    R = np.array(R)
+    e = np.array(e)
+    return(r.t_logpostker_unified_gamma(zeta,
+                               D = D,
+                               A = A,
+                               Time = Time,
+                               a = r.unlist(a),
+                               R = r.unlist(R), 
+                               e = r.unlist(e)
+                               #means = means,
+                               #stds = stds
+                               ))
+print("log likelihood: ", r.loglik(xi, Lambda_stars / (R*e*Time), D, A, Time, a, R, e))
+```
+
+```{python warning_switch1}
+#options(warn=0)
+#gamma.ppf(q=1, a = np.exp(2 * r.lmu0 - r.ltheta0), scale = 1/(1e-100*np.exp(r.lmu0 - r.ltheta0)))
+```
+
+```{python overlapping_sampler_setup}
+import numpy as np
+import warnings
+import sys
+from scipy.stats import gamma
+#import matplotlib.pyplot as plt
+
+# initial and true values
+pid = r.pid
+theta_star = r.theta_star
+mu_star = r.mu_star
+Time = int(r.Time)
+a = r.a # 100 from true values of Time and A
+R = r.R # modify for estimating Lambda, mu, theta
+e = r.e # modify for estimating Lambda, mu, theta
+n = r.n
+K = int(r.K)
+I = int(r.dimI)
+mu = r.mu # true value
+theta = r.theta # true value
+shape = r.shape
+rate = r.rate
+xi = r.xi
+xi_mle = r.xi_mle
+
+# overlapping true values
+AK = r.AK
+X = r.X
+aS = r.aS
+m = r.m
+RI = r.RI
+eS = r.eS
+
+# transform initial values
+t_mu = r.t_mu
+t_theta = r.t_theta
+t_pid = r.t_pid
+t_shape = r.t_shape
+t_rate = r.t_rate
+
+# simulate data
+np.random.seed(0)
+Lambda_stars = np.array(r.Lambdastar_over_simulator(n = n, I = I, eS = eS, RI = RI, pid = pid, mu_star = mu_star, theta_star = theta_star))
+Y = np.array(r.overlap_simulator(n = 15, Lambda_stars = Lambda_stars, xi_vec = xi_mle, m_mat = m, X = X))
+
+print(Y)
+print(X)
+```
+```{r plotting_settings}
+index_mat <- cbind(rep(1:3, 3:1), c(2:4, 3:4, 4))
+true_values <- c(t_mu, t_theta, t_pid, t_xi, py$Lambda_stars / (R * e * Time))
+true_values_overlap <- c(t_mu, t_theta, t_pid, xi_mle, py$Lambda_stars / (R * e * Time))
+param_name <- c("trans_mu", "trans_theta", "trans_pid", "trans_xi", paste("lambda", 1:10))
+param_name_nolog <- c("mu", "trans_theta", "pid", "trans_xi", paste("lambda", 1:10))
+t_xilim = c(t_xi - 0.015, t_xi + 0.015)
+t_plotlims = rbind(c(t_mu - 4, t_mu + 1),
+                   c(t_theta - 10, t_theta + 4),
+                   c(t_pid - 10, t_pid + 4),
+                   cbind(log(xi_mle) - 0.015, log(xi_mle) + 0.015))
+```
+
+```{python emcee}
+import emcee
+from tqdm import tqdm
+import h5py
+# sampler settings
+np.random.seed(42)
+nwalkers = int(2 * (r.n + 4))
+ndim = r.n + 4
+emcee_sampler = emcee.EnsembleSampler(
+  nwalkers = nwalkers,
+  ndim = ndim,
+  log_prob_fn = t_log_postker_unified_gamma,
+  vectorize = True
+  #args = D
+)
+
+# original scale true values
+truevals = np.array([mu, theta, pid, r.xi] * nwalkers)
+truevals = np.multiply(truevals.reshape((int(nwalkers), 4)), np.random.rand(nwalkers, 4))
+lambs = r.rgamma(n = r.n * nwalkers, shape = mu**2 / theta, rate = mu / theta)
+lambs = np.expand_dims(np.array(lambs), axis = -1)
+lambs = lambs.reshape((int(nwalkers), int(r.n)))
+init = np.hstack((truevals, lambs))
+
+#initmean = np.mean(init, axis=0)
+#initstd = np.std(init, axis=0)
+#init_standardized = (init - initmean) / initstd
+
+# transformed scale true values
+# hyperparameters
+turb_scale = 2
+turb_mu = r.rnorm(n = nwalkers, mean = t_mu, sd = np.abs((t_mu + 1) / turb_scale))
+turb_mu = np.expand_dims(np.array(turb_mu), axis = -1)
+turb_theta = r.rnorm(n = nwalkers, mean = t_theta, sd = np.abs((t_theta + 1) / turb_scale))
+turb_theta = np.expand_dims(np.array(turb_theta), axis = -1)
+#turb_pid = r.rnorm(n = nwalkers, mean = t_pid, sd = np.abs((t_pid + 1) / turb_scale))
+turb_pid = r.runif(n = nwalkers)
+turb_pid = np.expand_dims(np.array(turb_pid), axis = -1)
+turb_xi = r.rnorm(n = nwalkers, mean = t_xi, sd = np.abs((t_xi + 1) / turb_scale))
+turb_xi = np.expand_dims(np.array(turb_xi), axis = -1)
+
+# lambdas
+#large_random_order = 1.1
+# for the ones with lambda > 0
+#t_lambs_indicator = Lambda_stars == 0
+#t_lambs = r.rnorm(n = nwalkers * r.n, mean = np.max(Lambda_stars), sd = np.abs(np.max(Lambda_stars + 1) / turb_scale))
+#t_lambs = np.expand_dims(np.array(t_lambs), axis = -1)
+#t_lambs = t_lambs.reshape((int(nwalkers), int(r.n)))
+# for the ones with lambda = 0 (true value = -infinity)
+#large_neg_random = -np.random.rand(int(nwalkers * np.sum(t_lambs_indicator))) * 10**(large_random_order * np.random.rand(int(nwalkers * np.sum(t_lambs_indicator)))) # order should not exceed the order of sys.float_info.max
+#large_neg_random = np.expand_dims(np.array(large_neg_random), axis = -1)
+#large_neg_random = large_neg_random.reshape((int(nwalkers), np.sum(t_lambs_indicator)))
+#t_lambs[:, t_lambs_indicator] = large_neg_random
+
+t_lambs_init = r.rgamma(n = r.n * nwalkers, shape = mu**2 / theta, rate = mu / theta)
+t_lambs = t_lambs_init
+#t_lambs = np.log(t_lambs_init) + t_lambs_init
+t_lambs = np.expand_dims(np.array(t_lambs), axis = -1)
+t_lambs = t_lambs.reshape((int(nwalkers), int(r.n)))
+
+t_init = np.hstack((turb_mu, turb_theta, turb_pid, turb_xi, t_lambs))
+print(t_init)
+
+# testing the posterior kernel function in python
+t_log_postker_unified_gamma(zeta = t_init, D = D)
+t_log_postker_unified_gamma(t_init[[1], :], D = D)
+
+
+#warnings.filterwarnings("ignore")
+#HDFbackend = emcee.backends.HDFBackend("emcee_chains")
+r.tic()
+emcee_result = emcee_sampler.run_mcmc(t_init, nsteps = 60000, progress = True,
+  skip_initial_state_check = True)
+emcee_run_time = r.toc()
+
+emcee_sample = emcee_sampler.get_chain()
+t_log_postker_unified_gamma(zeta = emcee_result.coords, D = D)
+emcee_flat_sample = emcee_sampler.get_chain(flat = True)
+emcee_sampler.get_autocorr_time()
+```
+
+```{r emcee_tests}
+# re-coding the mcmc function to avoid bugs on logicals about thin
+mcmc <- function (data = NA, start = 1, end = numeric(0), thin = 1) {
+    if (is.matrix(data)) {
+        niter <- nrow(data)
+        nvar <- ncol(data)
+    }
+    else if (is.data.frame(data)) {
+        if (!all(sapply(data, is.numeric))) {
+            stop("Data frame contains non-numeric values")
+        }
+        data <- as.matrix(data)
+        niter <- nrow(data)
+        nvar <- ncol(data)
+    }
+    else {
+        niter <- length(data)
+        nvar <- 1
+    }
+  ###################
+  # desired functionality added: remove burn-in and thinning
+  desired <- seq(start, end, by = thin)
+  if (is.matrix(data) || is.data.frame(data)) {
+    data <- data[desired, ]
+  } else {
+    data <- data[desired]
+  }
+  ################
+  
+    #thin <- round(thin)
+    if (length(start) > 1) 
+        stop("Invalid start")
+    if (length(end) > 1) 
+        stop("Invalid end")
+    #if (length(thin) != 1) 
+    #    stop("Invalid thin")
+    if (missing(end)) 
+        end <- start + (niter - 1) * thin
+    else if (missing(start)) 
+        start <- end - (niter - 1) * thin
+    nobs <- floor((end - start)/thin + 1)
+    if (niter < nobs) 
+        stop("Start, end and thin incompatible with data")
+    else {
+        end <- start + thin * (nobs - 1)
+        if (nobs < niter) 
+            data <- data[1:nobs, , drop = FALSE]
+    }
+    attr(data, "mcpar") <- c(start, end, thin)
+    attr(data, "class") <- "mcmc"
+    data
+}
+# heidel.diag bug fixing
+heidel.diag <- function (x, eps = 0.1, pvalue = 0.05) {
+    if (is.mcmc.list(x)) 
+        return(lapply(x, heidel.diag, eps))
+    x <- as.mcmc(as.matrix(x))
+    HW.mat0 <- matrix(0, ncol = 6, nrow = coda::nvar(x))
+    dimnames(HW.mat0) <- list(varnames(x), c("stest", "start", 
+        "pvalue", "htest", "mean", "halfwidth"))
+    HW.mat <- HW.mat0
+    for (j in 1:coda::nvar(x)) {
+        start.vec <- seq(from = start(x), to = end(x)/2, by = niter(x)/10)
+        Y <- x[, j, drop = TRUE]
+        n1 <- length(Y)
+        S0 <- spectrum0.ar(window(Y, start = end(Y)/2))$spec
+        converged <- FALSE
+        for (i in seq(along = start.vec)) {
+            Y <- window(Y, start = start.vec[i])
+            n <- niter(Y)
+            ybar <- mean(Y)
+            B <- cumsum(Y) - ybar * (1:n)
+            Bsq <- (B * B)/(n * S0)
+            I <- sum(Bsq)/n
+            
+            # modified the following lines
+            converged <- !is.na(I)
+            if (converged) {
+              indicator <- pcramer(I) < 1 - pvalue
+              indicator <- ifelse(is.na(indicator), TRUE, indicator)
+              if (indicator) break
+            }
+        }
+        S0ci <- spectrum0.ar(Y)$spec
+        halfwidth <- 1.96 * sqrt(S0ci/n)
+        passed.hw <- !is.na(halfwidth) & (abs(halfwidth/ybar) <= 
+            eps)
+        if (!converged || is.na(I) || is.na(halfwidth)) {
+            nstart <- NA
+            passed.hw <- NA
+            halfwidth <- NA
+            ybar <- NA
+        }
+        else {
+            nstart <- start(Y)
+        }
+        HW.mat[j, ] <- c(converged, nstart, 1 - pcramer(I), passed.hw, 
+            ybar, halfwidth)
+    }
+    class(HW.mat) <- "heidel.diag"
+    return(HW.mat)
+}
+
+###################
+# emcee diagnostics
+###################
+thinning <- 5
+burnin <- 99
+end <- nrow(py$emcee_sample[, 1, ]) # 3981 points from parameter space in total
+emcee_plots <- function(index) {
+  # select the chain in emcee
+  emcee_mcmc <- mcmc(py$emcee_sample[, index, ], thin = thinning, start = burnin + 1, end = end)
+  
+  # plots
+  par(mar = rep(1, 4), oma = rep(1, 4))
+  coda::crosscorr.plot(emcee_mcmc, main = paste("chain", index))
+  coda::autocorr.plot(emcee_mcmc)
+  
+  print(paste("chain", index))
+}
+
+emcee_diagnostics <- function(index) {
+  # select the chain in emcee
+  emcee_mcmc <- mcmc(py$emcee_sample[, index, ], thin = thinning, start = burnin + 1, end = end)
+  
+  # diagnostic statistics
+  size <- coda::effectiveSize(emcee_mcmc)
+  geweke <- coda::geweke.diag(emcee_mcmc)
+  raftery <- coda::raftery.diag(emcee_mcmc)
+  heidel <- coda::heidel.diag(emcee_mcmc) # a bug in the heidel function
+  
+  list(print(paste("chain", index)),
+       print("effective size"), 
+       size, 
+       print("Geweke diagnostics"),
+       geweke, 
+       print("Raftery diagnostics"),
+       raftery,
+       print("Heidel diagnostics"),
+       heidel)
+}
+
+# testing
+emcee_plots(index = 1)
+emcee_diagnostics(index = 1)
+# saving results
+# diagnostic plots
+pdf(paste0(getwd(), "/simple/emcee/diagnostics/emcee_diagnostics.pdf"))
+sapply(1:py$nwalkers, emcee_plots)
+dev.off()
+
+# diagnostic statistics
+sink(file = paste0(getwd(), "/simple/emcee/diagnostics/emcee_diagnostics.txt"))
+emcee_diagnostics(1)
+emcee_diagnostics(2)
+emcee_diagnostics(3)
+emcee_diagnostics(4)
+emcee_diagnostics(5)
+emcee_diagnostics(6)
+emcee_diagnostics(7)
+emcee_diagnostics(8)
+emcee_diagnostics(9)
+emcee_diagnostics(10)
+emcee_diagnostics(11)
+emcee_diagnostics(12)
+emcee_diagnostics(13)
+emcee_diagnostics(14)
+emcee_diagnostics(15)
+emcee_diagnostics(16)
+emcee_diagnostics(17)
+emcee_diagnostics(18)
+emcee_diagnostics(19)
+emcee_diagnostics(20)
+emcee_diagnostics(21)
+emcee_diagnostics(22)
+emcee_diagnostics(23)
+emcee_diagnostics(24)
+emcee_diagnostics(25)
+emcee_diagnostics(26)
+emcee_diagnostics(27)
+emcee_diagnostics(28)
+#sapply(1:py$nwalkers, emcee_diagnostics)
+emcee_list <- list(mcmc(py$emcee_sample[, 1, ], thin = thinning, start = burnin + 1, end = end))
+for (i in 2:py$nwalkers) {
+    emcee_mcmc <- list(mcmc(py$emcee_sample[, i, ], thin = thinning, start = burnin + 1, end = end))
+    emcee_list = c(emcee_list, emcee_mcmc) # growing vector (efficiency not in consideration)
+}
+print("Gelman-Rubin diagnostics")
+coda::gelman.diag(as.mcmc.list(emcee_list))
+sink()
+
+
+##############
+# emcee sample plots
+##############
+emcee_results <- function(index) {
+  # select the chain in emcee
+  emcee_mcmc <- mcmc(py$emcee_sample[, index, ], thin = thinning, start = burnin + 1, end = end)
+  emcee_mcmc_mat <- matrix(unlist(emcee_mcmc), ncol = py$ndim)
+  
+  # results plotting function
+  par(mar = rep(1.5, 4), oma = rep(1, 4), mfrow = rep(2, 2))
+  plot(emcee_mcmc)
+  mcmc_plotresult <- function(i) {
+    plot(density(emcee_mcmc_mat[, i]), 
+         main = paste("Density of chain", index, ",", param_name[i]))
+    abline(v = true_values[i], col = "red")
+    }
+  
+  mcmc_plotresult(1)
+  mcmc_plotresult(2)
+  mcmc_plotresult(3)
+  mcmc_plotresult(4)
+}
+
+emcee_all_density <- function(i) {
+  inftrue <- is.infinite(true_values)
+  if (any(py$emcee_flat_sample[, i] < (true_values[i] - 50))) { # truncate the tails
+    pts <- py$emcee_flat_sample[, i]
+    pts[pts < (true_values[i] - 50)] <- NA
+    plot(density(pts, na.rm = TRUE), main = paste("ALL", param_name[i]))
+    abline(v = true_values[i], col = "red")
+    mtext(paste("the density is truncated for log lambda", i - 4, "on the left"), col = "blue", side = 1)
+  } else { # no truncation
+    plot(density(py$emcee_flat_sample[, i]), main = paste("ALL", param_name[i]))
+    abline(v = true_values[i], col = "red")
+  }
+  if (inftrue[i]) mtext(paste("log lambda", i - 4, "is negative infinity"), col = "red", side = 1)
+  print(paste("plot", i))
+}
+
+pdf(paste0(getwd(), "/simple/emcee/results/emcee_results.pdf"))
+sapply(1:14, emcee_all_density)
+sapply(1:py$nwalkers, emcee_results)
+dev.off()
+
+##########################
+# contour plots
+#########################
+# thinning
+emcee_thin_flat <- py$emcee_flat_sample[seq(100 * ncol(py$emcee_sample), nrow(py$emcee_flat_sample), by = thinning), ]
+colnames(emcee_thin_flat) <- param_name
+
+# plotting functions
+emcee_contour_3d <- function(index_vec) {
+  emcee_kde <- kde(emcee_thin_flat[, index_vec])
+  plot(emcee_kde, display = "rgl", xlab = param_name[index_vec[1]], ylab = param_name[index_vec[2]], zlab = param_name[index_vec[3]])
+}
+
+emcee_contour_2d <- function(index_vec, cont = seq(5, 95, by = 10)) {
+  emcee_kde <- kde(emcee_thin_flat[, index_vec])
+  plot(emcee_kde, display = "persp", col.fun = viridis::viridis,
+       xlab = param_name[index_vec[1]], ylab = param_name[index_vec[2]])
+  plot(emcee_kde, display = "filled.contour", cont = cont, col.fun = viridis::viridis,
+       xlab = param_name[index_vec[1]], ylab = param_name[index_vec[2]])
+  plot(emcee_kde, cont = cont, display = "slice", add = TRUE)
+}
+
+pdf(paste0(getwd(), "/simple/emcee/results/emcee_report.pdf"), width = 10, height = 8)
+layout(rbind(c(0, 11, 11, 11, 11, 11),
+             c(12, 0, 1, 20, 20, 0),
+             c(13, 0, 5, 2, 0, 0),
+             c(14, 0, 6, 8, 3, 0),
+             c(15, 0, 7, 9, 10, 4),
+             c(0, 0, 16, 17, 18, 19)),
+       width = c(lcm(2), lcm(2), 1, 1, 1, 1),
+       height = c(lcm(2), 1, 1, 1, 1, lcm(3)))
+par(mar = rep(0, 4), las = 1, cex = 1, tck = 0.01)
+sapply(1:3, function(i) {
+  plot(density(emcee_thin_flat[, i]), main = "", xlab = "", ylab = "", xaxt = "n", yaxt = "n")
+  abline(v = true_values[i], col = "red")
+})
+cont = seq(5, 95, by = 10)
+plot(density(emcee_thin_flat[, 4]), main = "", xlab = paste("log", expression(xi)), ylab = "", yaxt = "n")
+abline(v = true_values[4], col = "red")
+emcee_kde <- kde(emcee_thin_flat[, index_mat[1, ]])
+plot(emcee_kde, display = "filled.contour", cont = cont, col.fun = viridis::viridis,
+     xlab = "", ylab = paste("log", expression(theta)), xaxt = "n")
+plot(emcee_kde, cont = cont, display = "slice", add = TRUE)
+emcee_kde <- kde(emcee_thin_flat[, index_mat[2, ]])
+plot(emcee_kde, display = "filled.contour", cont = cont, col.fun = viridis::viridis,
+     xlab = "", ylab = paste("logit", expression(pi)), xaxt = "n")
+plot(emcee_kde, cont = cont, display = "slice", add = TRUE)
+emcee_kde <- kde(emcee_thin_flat[, index_mat[3, ]])
+plot(emcee_kde, display = "filled.contour", cont = cont, col.fun = viridis::viridis,
+     xlab = paste("log", expression(mu)), ylab = paste("log", expression(xi)))
+plot(emcee_kde, cont = cont, display = "slice", add = TRUE)
+emcee_kde <- kde(emcee_thin_flat[, index_mat[4, ]])
+plot(emcee_kde, display = "filled.contour", cont = cont, col.fun = viridis::viridis,
+     xlab = "", ylab = "", xaxt = "n", yaxt = "n")
+plot(emcee_kde, cont = cont, display = "slice", add = TRUE)
+emcee_kde <- kde(emcee_thin_flat[, index_mat[5, ]])
+plot(emcee_kde, display = "filled.contour", cont = cont, col.fun = viridis::viridis,
+     xlab = paste("log", expression(theta)), ylab = "", yaxt = "n")
+plot(emcee_kde, cont = cont, display = "slice", add = TRUE)
+emcee_kde <- kde(emcee_thin_flat[, index_mat[6, ]])
+plot(emcee_kde, display = "filled.contour", cont = cont, col.fun = viridis::viridis,
+     xlab = paste("logit", expression(pi)), ylab = "", yaxt = "n")
+plot(emcee_kde, cont = cont, display = "slice", add = TRUE)
+#mtext("Density and contour plots of parameters", cex = 1.5, font = 2, outer = TRUE)
+psrt = 60
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.25, "Density and contour plots of parameters", cex = 1.3, font = 2)
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("log("*mu*")"), srt = psrt)
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("log("*theta*")"), srt = psrt)
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("logit("*pi[d]*")"), srt = psrt)
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("log("*xi*")"), srt = psrt)
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("log("*mu*")"))
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("log("*theta*")"))
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5,  expression("logit("*pi[d]*")"))
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("log("*xi*")"))
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.75, "Poisson parametrization", font = 2, cex = 1.1)
+dev.off()
+
+# exploration
+#emcee_contour_3d(1:3)
+#emcee_contour_3d(c(1, 3, 4))
+#emcee_contour_3d(2:4)
+
+# plotting
+pdf(paste0(getwd(), "/simple/emcee/results/emcee_contours.pdf"))
+apply(index_mat, 1, emcee_contour_2d)
+dev.off()
+
+```
+
+```{r emcee_puregamma_tests}
+index_mat <- rbind(c(1, 2),
+                   c(1, 4),
+                   c(2, 4))
+###################
+# emcee diagnostics
+###################
+thinning <- 5
+burnin <- 99
+end <- nrow(py$emcee_sample[, 1, ]) # 3981 points from parameter space in total
+emcee_plots <- function(index) {
+  # select the chain in emcee
+  emcee_mcmc <- mcmc(py$emcee_sample[, index, ], thin = thinning, start = burnin + 1, end = end)
+  
+  # plots
+  par(mar = rep(1, 4), oma = rep(1, 4))
+  coda::crosscorr.plot(emcee_mcmc, main = paste("chain", index))
+  coda::autocorr.plot(emcee_mcmc)
+  
+  print(paste("chain", index))
+}
+
+emcee_diagnostics <- function(index) {
+  # select the chain in emcee
+  emcee_mcmc <- mcmc(py$emcee_sample[, index, ], thin = thinning, start = burnin + 1, end = end)
+  
+  # diagnostic statistics
+  size <- coda::effectiveSize(emcee_mcmc)
+  geweke <- coda::geweke.diag(emcee_mcmc)
+  raftery <- coda::raftery.diag(emcee_mcmc)
+  heidel <- coda::heidel.diag(emcee_mcmc) # a bug in the heidel function
+  
+  list(print(paste("chain", index)),
+       print("effective size"), 
+       size, 
+       print("Geweke diagnostics"),
+       geweke, 
+       print("Raftery diagnostics"),
+       raftery,
+       print("Heidel diagnostics"),
+       heidel)
+}
+
+# testing
+emcee_plots(index = 1)
+emcee_diagnostics(index = 1)
+# saving results
+# diagnostic plots
+pdf(paste0(getwd(), "/simple/emcee/diagnostics/emcee_diagnostics.pdf"))
+sapply(1:py$nwalkers, emcee_plots)
+dev.off()
+
+# diagnostic statistics
+sink(file = paste0(getwd(), "/simple/emcee/diagnostics/emcee_diagnostics.txt"))
+emcee_diagnostics(1)
+emcee_diagnostics(2)
+emcee_diagnostics(3)
+emcee_diagnostics(4)
+emcee_diagnostics(5)
+emcee_diagnostics(6)
+emcee_diagnostics(7)
+emcee_diagnostics(8)
+emcee_diagnostics(9)
+emcee_diagnostics(10)
+emcee_diagnostics(11)
+emcee_diagnostics(12)
+emcee_diagnostics(13)
+emcee_diagnostics(14)
+emcee_diagnostics(15)
+emcee_diagnostics(16)
+emcee_diagnostics(17)
+emcee_diagnostics(18)
+emcee_diagnostics(19)
+emcee_diagnostics(20)
+emcee_diagnostics(21)
+emcee_diagnostics(22)
+emcee_diagnostics(23)
+emcee_diagnostics(24)
+emcee_diagnostics(25)
+emcee_diagnostics(26)
+emcee_diagnostics(27)
+emcee_diagnostics(28)
+#sapply(1:py$nwalkers, emcee_diagnostics)
+emcee_list <- list(mcmc(py$emcee_sample[, 1, ], thin = thinning, start = burnin + 1, end = end))
+for (i in 2:py$nwalkers) {
+    emcee_mcmc <- list(mcmc(py$emcee_sample[, i, ], thin = thinning, start = burnin + 1, end = end))
+    emcee_list = c(emcee_list, emcee_mcmc) # growing vector (efficiency not in consideration)
+}
+print("Gelman-Rubin diagnostics")
+coda::gelman.diag(as.mcmc.list(emcee_list))
+sink()
+
+
+##############
+# emcee sample plots
+##############
+emcee_results <- function(index) {
+  # select the chain in emcee
+  emcee_mcmc <- mcmc(py$emcee_sample[, index, ], thin = thinning, start = burnin + 1, end = end)
+  emcee_mcmc_mat <- matrix(unlist(emcee_mcmc), ncol = py$ndim)
+  
+  # results plotting function
+  par(mar = rep(1.5, 4), oma = rep(1, 4), mfrow = rep(2, 2))
+  plot(emcee_mcmc)
+  mcmc_plotresult <- function(i) {
+    plot(density(emcee_mcmc_mat[, i]), 
+         main = paste("Density of chain", index, ",", param_name[i]))
+    abline(v = true_values[i], col = "red")
+    }
+  
+  mcmc_plotresult(1)
+  mcmc_plotresult(2)
+  mcmc_plotresult(3)
+  mcmc_plotresult(4)
+}
+
+emcee_all_density <- function(i) {
+  inftrue <- is.infinite(true_values)
+  if (any(py$emcee_flat_sample[, i] < (true_values[i] - 50))) { # truncate the tails
+    pts <- py$emcee_flat_sample[, i]
+    pts[pts < (true_values[i] - 50)] <- NA
+    plot(density(pts, na.rm = TRUE), main = paste("ALL", param_name[i]))
+    abline(v = true_values[i], col = "red")
+    mtext(paste("the density is truncated for log lambda", i - 4, "on the left"), col = "blue", side = 1)
+  } else { # no truncation
+    plot(density(py$emcee_flat_sample[, i]), main = paste("ALL", param_name[i]))
+    abline(v = true_values[i], col = "red")
+  }
+  if (inftrue[i]) mtext(paste("log lambda", i - 4, "is negative infinity"), col = "red", side = 1)
+  print(paste("plot", i))
+}
+
+pdf(paste0(getwd(), "/simple/emcee/results/puregamma/emcee_results.pdf"))
+sapply(c(1:2, 4:14), emcee_all_density)
+sapply(1:py$nwalkers, emcee_results)
+dev.off()
+
+##########################
+# contour plots
+#########################
+# thinning
+emcee_thin_flat <- py$emcee_flat_sample[seq(100 * ncol(py$emcee_sample), nrow(py$emcee_flat_sample), by = thinning), ]
+colnames(emcee_thin_flat) <- param_name
+
+# plotting functions
+emcee_contour_3d <- function(index_vec) {
+  emcee_kde <- kde(emcee_thin_flat[, index_vec])
+  plot(emcee_kde, display = "rgl", xlab = param_name[index_vec[1]], ylab = param_name[index_vec[2]], zlab = param_name[index_vec[3]])
+}
+
+emcee_contour_2d <- function(index_vec, cont = seq(5, 95, by = 10)) {
+  emcee_kde <- kde(emcee_thin_flat[, index_vec])
+  plot(emcee_kde, display = "persp", col.fun = viridis::viridis,
+       xlab = param_name[index_vec[1]], ylab = param_name[index_vec[2]])
+  plot(emcee_kde, display = "filled.contour", cont = cont, col.fun = viridis::viridis,
+       xlab = param_name[index_vec[1]], ylab = param_name[index_vec[2]])
+  plot(emcee_kde, cont = cont, display = "slice", add = TRUE)
+}
+
+pdf(paste0(getwd(), "/simple/emcee/results/puregamma/emcee_report.pdf"), width = 10, height = 8)
+layout(rbind(c(0, 7, 7, 7, 7),
+             c(8, 0, 1, 14, 14),
+             c(9, 0, 4, 2, 0),
+             c(10, 0, 5, 6, 3),
+             c(0, 0, 11, 12, 13)),
+       width = c(lcm(2), lcm(2), 1, 1, 1),
+       height = c(lcm(2), 1, 1, 1, 1, lcm(3)))
+par(mar = rep(0, 4), las = 1, cex = 1, tck = 0.01)
+sapply(1:2, function(i) {
+  plot(density(emcee_thin_flat[, i]), main = "", xlab = "", ylab = "", xaxt = "n", yaxt = "n")
+  abline(v = true_values[i], col = "red")
+})
+cont = seq(5, 95, by = 10)
+plot(density(emcee_thin_flat[, 4]), main = "", xlab = paste("log", expression(xi)), ylab = "", yaxt = "n")
+abline(v = true_values[4], col = "red")
+emcee_kde <- kde(emcee_thin_flat[, index_mat[1, ]])
+plot(emcee_kde, display = "filled.contour", cont = cont, col.fun = viridis::viridis,
+     xlab = "", ylab = paste("log", expression(theta)), xaxt = "n")
+plot(emcee_kde, cont = cont, display = "slice", add = TRUE)
+emcee_kde <- kde(emcee_thin_flat[, index_mat[2, ]])
+plot(emcee_kde, display = "filled.contour", cont = cont, col.fun = viridis::viridis,
+     xlab = paste("log", expression(mu)), ylab = paste("log", expression(xi)))
+plot(emcee_kde, cont = cont, display = "slice", add = TRUE)
+emcee_kde <- kde(emcee_thin_flat[, index_mat[3, ]])
+plot(emcee_kde, display = "filled.contour", cont = cont, col.fun = viridis::viridis,
+     xlab = paste("log", expression(theta)), ylab = "", yaxt = "n")
+plot(emcee_kde, cont = cont, display = "slice", add = TRUE)
+#mtext("Density and contour plots of parameters", cex = 1.5, font = 2, outer = TRUE)
+psrt = 60
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.25, "Density and contour plots of parameters", cex = 1.3, font = 2)
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("log("*mu*")"), srt = psrt)
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("log("*theta*")"), srt = psrt)
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("log("*xi*")"), srt = psrt)
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("log("*mu*")"))
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("log("*theta*")"))
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("log("*xi*")"))
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.75, "Poisson parametrization", font = 2, cex = 1.1)
+dev.off()
+
+# exploration
+#emcee_contour_3d(1:3)
+#emcee_contour_3d(c(1, 3, 4))
+#emcee_contour_3d(2:4)
+
+# plotting
+pdf(paste0(getwd(), "/simple/emcee/results/puregamma/emcee_contours.pdf"))
+apply(index_mat, 1, emcee_contour_2d)
+dev.off()
+
+```
+
+```{python dynesty}
+from dynesty.utils import resample_equal
+from dynesty import NestedSampler, DynamicNestedSampler
+from dynesty import plotting as dyplot
+import matplotlib.pyplot as plt
+
+# prior
+def prior_transform(u):
+  u = np.array(u)
+  #x = np.array(D[-1])
+  return r.prior_transform(u)
+
+def loglikelihood_dynesty(zeta):
+    #mu = zeta[0]
+    #theta = zeta[1]
+    #pid = zeta[2]
+    xi = np.exp(zeta[3])
+    #aux = zeta[4]
+    Lambda = zeta[4:]
+    return r.loglik(xi, Lambda, D, A, float(Time), a, R, e)
+  
+def prior_over_transform(u):
+  u = np.array(u)
+  #x = np.array(D[-1])
+  return r.prior_over_transform(u, K)
+
+def loglikelihood_dynesty_over(zeta):
+    #mu = zeta[0]
+    #theta = zeta[1]
+    #pid = zeta[2]
+    xi_vec = np.exp(zeta[3:(3 + K)])
+    #aux = zeta[4]
+    Lambda = zeta[(3 + K):]
+    return r.loglik_over(xi_vec, Lambda, X, Y, A = AK, Time = float(Time), a = aS, r = RI, e = eS, m = m)
+
+nlive = 1024      # number of (initial) live points
+bound = 'multi'   # use MutliNest algorithm
+dlogz = float(1e-10)
+np.random.seed(42)
+
+# non-overlapping sampler
+#ndims = int(n + 4)
+#dsampler = NestedSampler(loglikelihood_dynesty, prior_transform, ndims, bound=bound, nlive = nlive)
+
+# overlapping sampler
+ndims_over = int(I + K + 3)
+dsampler = NestedSampler(loglikelihood_dynesty_over, prior_over_transform, ndims_over, bound=bound, nlive = nlive)
+r.tic()
+dsampler.run_nested(dlogz = dlogz)
+dynesty_run_time = r.toc()
+
+dres = dsampler.results
+raw_dynesty_sample = dres.samples
+dynesty_sample = dres.samples_equal()
+
+
+dlogZdynesty = dres.logz[-1]        # value of logZ
+dlogZerrdynesty = dres.logzerr[-1]  # estimate of the statistcal uncertainty on logZ
+
+# output marginal likelihood
+print('Marginalised evidence (using dynamic sampler) is {} ± {}'.format(dlogZdynesty, dlogZerrdynesty))
+
+# get the posterior samples
+dweights = np.exp(dres['logwt'] - dres['logz'][-1])
+dpostsamples = resample_equal(dres.samples, dweights)
+
+print('Number of posterior samples (using dynamic sampler) is {}'.format(dpostsamples.shape[0]))
+
+fig, axes = dyplot.runplot(dres)  # summary (run) plot
+plt.show()
+fig, axes = dyplot.traceplot(dres,
+                             show_titles=True,
+                             trace_cmap='viridis', connect=True,
+                             connect_highlight=range(5),
+                             # for non-overlapping
+                             #dims = [0, 1, 2, 3],
+                             #truths = [t_mu, t_theta, t_pid, t_xi],
+                             #labels = ['log(\u03BC)', 'log(\u03B8)', 'logit(\u03C0)', 'log(\u03BE)'],
+                             # for overlapping
+                             dims = [0, 1, 2, 3, 4, 5],
+                             truths = [t_mu, t_theta, t_pid] + np.log(xi_mle).tolist(),
+                             labels = ['log(\u03BC)', 'log(\u03B8)', 'logit($\u03C0_{d}$)', 'log($\u03BE_{1}$)', 'log($\u03BE_{2}$)', 'log($\u03BE_{3}$)'],
+                             truth_color = 'orange'
+                             )
+plt.show()
+```
+
+```{r dynesty_tests}
+#############
+# processing
+#############
+t_dynesty_sample <- py$dynesty_sample
+
+#pdf(paste0(getwd(), "/simple/dynesty/results/dynesty_report.pdf"), width = 10, height = 8)
+############
+# plotting
+###########
+index_mat <- cbind(rep(1:3, 3:1), c(2:4, 3:4, 4))
+
+layout(rbind(c(0, 11, 11, 11, 11, 11),
+             c(12, 0, 1, 20, 20, 0),
+             c(13, 0, 5, 2, 0, 0),
+             c(14, 0, 6, 8, 3, 0),
+             c(15, 0, 7, 9, 10, 4),
+             c(0, 0, 16, 17, 18, 19)),
+       width = c(lcm(2), lcm(2), 1, 1, 1, 1),
+       height = c(lcm(2), 1, 1, 1, 1, lcm(3)))
+par(mar = rep(0, 4), las = 1, cex = 1, tck = 0.01)
+sapply(1:3, function(i) {
+  plot(density(t_dynesty_sample[, i]), main = "", xlab = "", ylab = "", xaxt = "n", yaxt = "n",
+       xlim = t_plotlims[i, ])
+  abline(v = true_values[i], col = "red")
+})
+cont = seq(5, 95, by = 10)
+plot(density(t_dynesty_sample[, 4]), main = "", xlab = paste("log", expression(xi)), ylab = "", yaxt = "n", 
+     xlim = t_xilim)
+abline(v = true_values[4], col = "red")
+dynesty_kde <- kde(t_dynesty_sample[, index_mat[1, ]])
+plot(dynesty_kde, display = "filled.contour", cont = cont, col.fun = viridis::viridis,
+     xlab = "", ylab = paste("log", expression(theta)), xaxt = "n",
+     xlim = t_plotlims[1, ], ylim = t_plotlims[2, ])
+plot(dynesty_kde, cont = cont, display = "slice", add = TRUE)
+dynesty_kde <- kde(t_dynesty_sample[, index_mat[2, ]])
+plot(dynesty_kde, display = "filled.contour", cont = cont, col.fun = viridis::viridis,
+     xlab = "", ylab = paste("logit", expression(pi)), xaxt = "n",
+     xlim = t_plotlims[1, ], ylim = t_plotlims[3, ])
+plot(dynesty_kde, cont = cont, display = "slice", add = TRUE)
+dynesty_kde <- kde(t_dynesty_sample[, index_mat[3, ]])
+plot(dynesty_kde, display = "filled.contour", cont = cont, col.fun = viridis::viridis,
+     xlab = paste("log", expression(mu)), ylab = paste("log", expression(xi)),
+     xlim = t_plotlims[1, ], ylim = t_xilim)
+plot(dynesty_kde, cont = cont, display = "slice", add = TRUE)
+dynesty_kde <- kde(t_dynesty_sample[, index_mat[4, ]])
+plot(dynesty_kde, display = "filled.contour", cont = cont, col.fun = viridis::viridis,
+     xlab = "", ylab = "", xaxt = "n", yaxt = "n",
+     xlim = t_plotlims[2, ], ylim = t_plotlims[3, ])
+plot(dynesty_kde, cont = cont, display = "slice", add = TRUE)
+dynesty_kde <- kde(t_dynesty_sample[, index_mat[5, ]])
+plot(dynesty_kde, display = "filled.contour", cont = cont, col.fun = viridis::viridis,
+     xlab = paste("log", expression(theta)), ylab = "", yaxt = "n",
+     xlim = t_plotlims[2, ], ylim = t_xilim)
+plot(dynesty_kde, cont = cont, display = "slice", add = TRUE)
+dynesty_kde <- kde(t_dynesty_sample[, index_mat[6, ]])
+plot(dynesty_kde, display = "filled.contour", cont = cont, col.fun = viridis::viridis,
+     xlab = paste("logit", expression(pi)), ylab = "", yaxt = "n",
+     xlim = t_plotlims[3, ], ylim = t_xilim)
+plot(dynesty_kde, cont = cont, display = "slice", add = TRUE)
+#mtext("Density and contour plots of parameters", cex = 1.5, font = 2, outer = TRUE)
+psrt = 60
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.25, "Density and contour plots of parameters", cex = 1.3, font = 2)
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("log("*mu*")"), srt = psrt)
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("log("*theta*")"), srt = psrt)
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("logit("*pi[d]*")"), srt = psrt)
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("log("*xi*")"), srt = psrt)
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("log("*mu*")"))
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("log("*theta*")"))
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5,  expression("logit("*pi[d]*")"))
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("log("*xi*")"))
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.75, "Poisson parametrization", font = 2, cex = 1.1)
+#dev.off()
+```
+
+```{r dynesty_overlap_tests}
+#############
+# processing
+#############
+t_dynesty_sample <- py$dynesty_sample
+
+#pdf(paste0(getwd(), "/simple/dynesty/results/dynesty_overlap_report.pdf"), width = 12, height = 10)
+############
+# plotting
+###########
+index_mat <- cbind(rep(1:5, 5:1), c(2:6, 3:6, 4:6, 5:6, 6))
+
+layout(rbind(c(0,  22,22, 22, 22, 22, 22, 22),
+             c(23, 0, 1,  35, 35, 35, 35,  0),
+             c(24, 0, 7,  2,  0,  0,  0,  0),
+             c(25, 0, 8,  12, 3,  0,  0,  0),
+             c(26, 0, 9,  13, 16, 4,  0,  0),
+             c(27, 0, 10, 14, 17, 19, 5,  0),
+             c(28, 0, 11, 15, 18, 20, 21, 6),
+             c(0,  0, 29, 30, 31, 32, 33, 34)),
+       width = c(lcm(2), lcm(2), 1, 1, 1, 1, 1, 1),
+       height = c(lcm(2), 1, 1, 1, 1, 1, 1, lcm(3)))
+par(mar = rep(0, 4), las = 1, cex = 1, tck = 0.01)
+sapply(1:3, function(i) {
+  plot(density(t_dynesty_sample[, i]), main = "", xlab = "", ylab = "", xaxt = "n", yaxt = "n",
+       xlim = t_plotlims[i, ])
+  abline(v = true_values_overlap[i], col = "red")
+})
+sapply(4:(K + 2), function(i) {
+  plot(density(t_dynesty_sample[, i]), main = "", xlab = "", ylab = "", xaxt = "n", yaxt = "n",
+       xlim = t_plotlims[i, ])
+  abline(v = log(true_values_overlap[i]), col = "red")
+})
+plot(density(t_dynesty_sample[, K + 3]), main = "", xlab = paste("log", expression(xi[3])), 
+     ylab = "", yaxt = "n", xlim = t_plotlims[K + 3, ])
+abline(v = log(true_values_overlap[K + 3]), col = "red")
+
+#first contour column
+cont = seq(5, 95, by = 10)
+dynesty_kde <- kde(t_dynesty_sample[, index_mat[1, ]])
+plot(dynesty_kde, display = "filled.contour", cont = cont, col.fun = viridis::viridis,
+     xlab = "", ylab = paste("log", expression(theta)), xaxt = "n",
+     xlim = t_plotlims[1, ], ylim = t_plotlims[2, ])
+plot(dynesty_kde, cont = cont, display = "slice", add = TRUE)
+dynesty_kde <- kde(t_dynesty_sample[, index_mat[2, ]])
+plot(dynesty_kde, display = "filled.contour", cont = cont, col.fun = viridis::viridis,
+     xlab = "", ylab = paste("logit", expression(pi)), xaxt = "n",
+     xlim = t_plotlims[1, ], ylim = t_plotlims[3, ])
+plot(dynesty_kde, cont = cont, display = "slice", add = TRUE)
+dynesty_kde <- kde(t_dynesty_sample[, index_mat[3, ]])
+plot(dynesty_kde, display = "filled.contour", cont = cont, col.fun = viridis::viridis,
+     xlab = "", ylab = paste("log", expression(xi[1])), xaxt = "n",
+     xlim = t_plotlims[1, ], ylim = t_plotlims[4, ])
+plot(dynesty_kde, cont = cont, display = "slice", add = TRUE)
+dynesty_kde <- kde(t_dynesty_sample[, index_mat[4, ]])
+plot(dynesty_kde, display = "filled.contour", cont = cont, col.fun = viridis::viridis,
+     xlab = "", ylab = paste("log", expression(xi[2])), xaxt = "n",
+     xlim = t_plotlims[1, ], ylim = t_plotlims[5, ])
+plot(dynesty_kde, cont = cont, display = "slice", add = TRUE)
+dynesty_kde <- kde(t_dynesty_sample[, index_mat[5, ]])
+plot(dynesty_kde, display = "filled.contour", cont = cont, col.fun = viridis::viridis,
+     xlab = paste("log", expression(mu)), ylab = paste("log", expression(xi[3])),
+     mgp = c(3, 0.5, 0), xlim = t_plotlims[1, ], ylim = t_plotlims[6, ])
+plot(dynesty_kde, cont = cont, display = "slice", add = TRUE)
+
+#second contour column
+dynesty_kde <- kde(t_dynesty_sample[, index_mat[6, ]])
+plot(dynesty_kde, display = "filled.contour", cont = cont, col.fun = viridis::viridis,
+     xlab = "", ylab = "", xaxt = "n", yaxt = "n",
+     xlim = t_plotlims[2, ], ylim = t_plotlims[3, ])
+plot(dynesty_kde, cont = cont, display = "slice", add = TRUE)
+dynesty_kde <- kde(t_dynesty_sample[, index_mat[7, ]])
+plot(dynesty_kde, display = "filled.contour", cont = cont, col.fun = viridis::viridis,
+     xlab = "", ylab = "", xaxt = "n", yaxt = "n",
+     xlim = t_plotlims[2, ], ylim = t_plotlims[4, ])
+plot(dynesty_kde, cont = cont, display = "slice", add = TRUE)
+dynesty_kde <- kde(t_dynesty_sample[, index_mat[8, ]])
+plot(dynesty_kde, display = "filled.contour", cont = cont, col.fun = viridis::viridis,
+     xlab = "", ylab = "", xaxt = "n", yaxt = "n",
+     xlim = t_plotlims[2, ], ylim = t_plotlims[5, ])
+plot(dynesty_kde, cont = cont, display = "slice", add = TRUE)
+dynesty_kde <- kde(t_dynesty_sample[, index_mat[9, ]])
+plot(dynesty_kde, display = "filled.contour", cont = cont, col.fun = viridis::viridis,
+     xlab = paste("log", expression(theta)), ylab = "", yaxt = "n",
+     xlim = t_plotlims[2, ], ylim = t_plotlims[6, ])
+plot(dynesty_kde, cont = cont, display = "slice", add = TRUE)
+
+# third column of contours
+dynesty_kde <- kde(t_dynesty_sample[, index_mat[10, ]])
+plot(dynesty_kde, display = "filled.contour", cont = cont, col.fun = viridis::viridis,
+     xlab = "", ylab = "", xaxt = "n", yaxt = "n",
+     xlim = t_plotlims[3, ], ylim = t_plotlims[4, ])
+plot(dynesty_kde, cont = cont, display = "slice", add = TRUE)
+dynesty_kde <- kde(t_dynesty_sample[, index_mat[11, ]])
+plot(dynesty_kde, display = "filled.contour", cont = cont, col.fun = viridis::viridis,
+     xlab = "", ylab = "", xaxt = "n", yaxt = "n",
+     xlim = t_plotlims[3, ], ylim = t_plotlims[5, ])
+plot(dynesty_kde, cont = cont, display = "slice", add = TRUE)
+dynesty_kde <- kde(t_dynesty_sample[, index_mat[12, ]])
+plot(dynesty_kde, display = "filled.contour", cont = cont, col.fun = viridis::viridis,
+     xlab = paste("logit", expression(pi)), ylab = "", yaxt = "n",
+     mgp = c(3, 0.5, 0), xlim = t_plotlims[3, ], ylim = t_plotlims[6, ])
+plot(dynesty_kde, cont = cont, display = "slice", add = TRUE)
+
+# last 3 contours
+dynesty_kde <- kde(t_dynesty_sample[, index_mat[13, ]])
+plot(dynesty_kde, display = "filled.contour", cont = cont, col.fun = viridis::viridis,
+     xlab = "", ylab = "", xaxt = "n", yaxt = "n", xlim = t_plotlims[4, ], ylim = t_plotlims[5, ])
+plot(dynesty_kde, cont = cont, display = "slice", add = TRUE)
+dynesty_kde <- kde(t_dynesty_sample[, index_mat[14, ]])
+plot(dynesty_kde, display = "filled.contour", cont = cont, col.fun = viridis::viridis,
+     xlab = paste("log", expression(theta[1])), ylab = "", yaxt = "n", 
+     xlim = t_plotlims[4, ], ylim = t_plotlims[6, ])
+plot(dynesty_kde, cont = cont, display = "slice", add = TRUE)
+dynesty_kde <- kde(t_dynesty_sample[, index_mat[15, ]])
+plot(dynesty_kde, display = "filled.contour", cont = cont, col.fun = viridis::viridis,
+     xlab = paste("log", expression(theta[2])), ylab = "", yaxt = "n",
+     mgp = c(3, 0.5, 0), xlim = t_plotlims[5, ], ylim = t_plotlims[6, ])
+plot(dynesty_kde, cont = cont, display = "slice", add = TRUE)
+
+#mtext("Density and contour plots of parameters", cex = 1.5, font = 2, outer = TRUE)
+psrt = 45
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.25, "Density and contour plots of parameters", cex = 1.3, font = 2)
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("log("*mu*")"), srt = psrt)
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("log("*theta*")"), srt = psrt)
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("logit("*pi[d]*")"), srt = psrt)
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("log("*xi[1]*")"), srt = psrt)
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("log("*xi[2]*")"), srt = psrt)
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("log("*xi[3]*")"), srt = psrt)
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("log("*mu*")"), srt = psrt)
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("log("*theta*")"), srt = psrt)
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5,  expression("logit("*pi[d]*")"), srt = psrt)
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("log("*xi[1]*")"), srt = psrt)
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("log("*xi[2]*")"), srt = psrt)
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("log("*xi[3]*")"), srt = psrt)
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.75, "Poisson parametrization", font = 2, cex = 1.1)
+#dev.off()
+```
+
+```{r dynesty_tests_nolog}
+#############
+# processing
+#############
+dynesty_sample <- cbind(py$dynesty_sample[, 1], log(py$dynesty_sample[, 2]), py$dynesty_sample[, 3], log(py$dynesty_sample[, 4]))
+
+pdf(paste0(getwd(), "/simple/dynesty/results/dynesty_report.pdf"), width = 10, height = 8)
+############
+# plotting
+###########
+layout(rbind(c(0, 11, 11, 11, 11, 11),
+             c(12, 0, 1, 20, 20, 0),
+             c(13, 0, 5, 2, 0, 0),
+             c(14, 0, 6, 8, 3, 0),
+             c(15, 0, 7, 9, 10, 4),
+             c(0, 0, 16, 17, 18, 19)),
+       width = c(lcm(2), lcm(2), 1, 1, 1, 1),
+       height = c(lcm(2), 1, 1, 1, 1, lcm(3)))
+par(mar = rep(0, 4), las = 1, cex = 1, tck = 0.01)
+sapply(1:3, function(i) {
+  plot(density(dynesty_sample[, i]), main = "", xlab = "", ylab = "", xaxt = "n", yaxt = "n")
+  abline(v = true_values_nolog[i], col = "red")
+})
+cont = seq(5, 95, by = 10)
+plot(density(dynesty_sample[, 4]), main = "", xlab = paste("log", expression(xi)), ylab = "", yaxt = "n")
+abline(v = true_values_nolog[4], col = "red")
+dynesty_kde <- kde(dynesty_sample[, index_mat[1, ]])
+plot(dynesty_kde, display = "filled.contour", cont = cont, col.fun = viridis::viridis,
+     xlab = "", ylab = paste("log", expression(theta)), xaxt = "n")
+plot(dynesty_kde, cont = cont, display = "slice", add = TRUE)
+dynesty_kde <- kde(dynesty_sample[, index_mat[2, ]])
+plot(dynesty_kde, display = "filled.contour", cont = cont, col.fun = viridis::viridis,
+     xlab = "", ylab = paste("logit", expression(pi)), xaxt = "n")
+plot(dynesty_kde, cont = cont, display = "slice", add = TRUE)
+dynesty_kde <- kde(dynesty_sample[, index_mat[3, ]])
+plot(dynesty_kde, display = "filled.contour", cont = cont, col.fun = viridis::viridis,
+     xlab = paste("log", expression(mu)), ylab = paste("log", expression(xi)))
+plot(dynesty_kde, cont = cont, display = "slice", add = TRUE)
+dynesty_kde <- kde(dynesty_sample[, index_mat[4, ]])
+plot(dynesty_kde, display = "filled.contour", cont = cont, col.fun = viridis::viridis,
+     xlab = "", ylab = "", xaxt = "n", yaxt = "n")
+plot(dynesty_kde, cont = cont, display = "slice", add = TRUE)
+dynesty_kde <- kde(t_dynesty_sample[, index_mat[5, ]])
+plot(dynesty_kde, display = "filled.contour", cont = cont, col.fun = viridis::viridis,
+     xlab = paste("log", expression(theta)), ylab = "", yaxt = "n")
+plot(dynesty_kde, cont = cont, display = "slice", add = TRUE)
+dynesty_kde <- kde(dynesty_sample[, index_mat[6, ]])
+plot(dynesty_kde, display = "filled.contour", cont = cont, col.fun = viridis::viridis,
+     xlab = paste("logit", expression(pi)), ylab = "", yaxt = "n")
+plot(dynesty_kde, cont = cont, display = "slice", add = TRUE)
+#mtext("Density and contour plots of parameters", cex = 1.5, font = 2, outer = TRUE)
+psrt = 60
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.25, "Density and contour plots of parameters", cex = 1.3, font = 2)
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression(mu), srt = psrt)
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("log("*theta*")"), srt = psrt)
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression(pi[d]), srt = psrt)
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("log("*xi*")"), srt = psrt)
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression(mu))
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("log("*theta*")"))
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5,  expression(pi[d]))
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("log("*xi*")"))
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.75, "Poisson parametrization", font = 2, cex = 1.1)
+dev.off()
+```
+
+```{r dynesty_tests_puregamma}
+index_mat <- rbind(c(1, 2),
+                   c(1, 4),
+                   c(2, 4))
+#############
+# processing
+#############
+t_dynesty_sample <- cbind(log(py$dynesty_sample[, 1:2]), logit(py$dynesty_sample[, 3]), log(py$dynesty_sample[, 4]))
+
+pdf(paste0(getwd(), "/simple/dynesty/puregamma/results/dynesty_report.pdf"), width = 10, height = 8)
+############
+# plotting
+###########
+layout(rbind(c(0, 7, 7, 7, 7),
+             c(8, 0, 1, 14, 14),
+             c(9, 0, 4, 2, 0),
+             c(10, 0, 5, 6, 3),
+             c(0, 0, 11, 12, 13)),
+       width = c(lcm(2), lcm(2), 1, 1, 1),
+       height = c(lcm(2), 1, 1, 1, 1, lcm(3)))
+par(mar = rep(0, 4), las = 1, cex = 1, tck = 0.01)
+sapply(1:2, function(i) {
+  plot(density(t_dynesty_sample[, i]), main = "", xlab = "", ylab = "", xaxt = "n", yaxt = "n")
+  abline(v = true_values[i], col = "red")
+})
+cont = seq(5, 95, by = 10)
+plot(density(t_dynesty_sample[, 4]), main = "", xlab = paste("log", expression(xi)), ylab = "", yaxt = "n")
+abline(v = true_values[4], col = "red")
+dynesty_kde <- kde(t_dynesty_sample[, index_mat[1, ]])
+plot(dynesty_kde, display = "filled.contour", cont = cont, col.fun = viridis::viridis,
+     xlab = "", ylab = paste("log", expression(theta)), xaxt = "n")
+plot(dynesty_kde, cont = cont, display = "slice", add = TRUE)
+dynesty_kde <- kde(t_dynesty_sample[, index_mat[2, ]])
+plot(dynesty_kde, display = "filled.contour", cont = cont, col.fun = viridis::viridis,
+     xlab = "", ylab = paste("logit", expression(pi)), xaxt = "n")
+plot(dynesty_kde, cont = cont, display = "slice", add = TRUE)
+dynesty_kde <- kde(t_dynesty_sample[, index_mat[3, ]])
+plot(dynesty_kde, display = "filled.contour", cont = cont, col.fun = viridis::viridis,
+     xlab = paste("log", expression(mu)), ylab = paste("log", expression(xi)))
+plot(dynesty_kde, cont = cont, display = "slice", add = TRUE)
+
+#mtext("Density and contour plots of parameters", cex = 1.5, font = 2, outer = TRUE)
+psrt = 60
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.25, "Density and contour plots of parameters", cex = 1.3, font = 2)
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("log("*mu*")"), srt = psrt)
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("log("*theta*")"), srt = psrt)
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("log("*xi*")"), srt = psrt)
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("log("*mu*")"))
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("log("*theta*")"))
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("log("*xi*")"))
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.75, "Poisson parametrization", font = 2, cex = 1.1)
+dev.off()
+```
+
+```{python integrated_dynesty}
+from dynesty.utils import resample_equal
+from dynesty import NestedSampler, DynamicNestedSampler
+from dynesty import plotting as dyplot
+import matplotlib.pyplot as plt
+#import pyreadr
+
+# if last D shall be used
+#df = pyreadr.read_r('results.RDS')
+
+# prior
+def int_prior_transform(u):
+  u = np.array(u)
+  x = D[-1]
+  return r.int_prior_transform(u)
+
+def int_loglikelihood_dynesty(zeta):
+    t_mu = zeta[0]
+    t_theta = zeta[1]
+    t_pid = zeta[2]
+    t_xi = zeta[3]
+    return r.integrated_likelihood_transform(t_mu, t_theta, t_pid, t_xi, D, A, float(Time), a, R, e)
+
+int_nlive = 1024      # number of (initial) live points
+int_bound = 'multi'   # use MutliNest algorithm
+int_ndims = int(4)
+int_dlogz = float(1e-10)
+
+int_dsampler = NestedSampler(int_loglikelihood_dynesty, int_prior_transform, ndim = int_ndims, bound = int_bound, nlive = int_nlive)
+r.tic()
+int_dsampler.run_nested(dlogz = int_dlogz)
+int_dynesty_run_time = r.toc()
+int_dres = int_dsampler.results
+raw_int_dynesty_sample = int_dres.samples
+int_dynesty_sample = int_dres.samples_equal()
+
+int_dlogZdynesty = int_dres.logz[-1]        # value of logZ
+int_dlogZerrdynesty = int_dres.logzerr[-1]  # estimate of the statistcal uncertainty on logZ
+
+# output marginal likelihood
+print('Marginalised evidence is {} ± {}'.format(int_dlogZdynesty, int_dlogZerrdynesty))
+
+# get the posterior samples
+int_dweights = np.exp(int_dres['logwt'] - int_dres['logz'][-1])
+int_dpostsamples = resample_equal(int_dres.samples, int_dweights)
+
+print('Number of posterior samples is {}'.format(int_dpostsamples.shape[0]))
+
+fig, axes = dyplot.runplot(int_dres)  # summary (run) plot
+plt.show()
+fig, axes = dyplot.traceplot(int_dres,
+                             show_titles=True,
+                             trace_cmap='viridis', connect=True,
+                             connect_highlight=range(5),
+                             # for non-overlapping
+                             dims = [0, 1, 2, 3],
+                             truths = [t_mu, t_theta, t_pid, t_xi],
+                             labels = ['log(\u03BC)', 'log(\u03B8)', 'logit(\u03C0)', 'log(\u03BE)'],
+                             # for overlapping
+                             #dims = [0, 1, 2, 3, 4, 5],
+                             #truths = [t_mu, t_theta, t_pid, t_xi, xi_mle],
+                             truth_color = 'orange')
+plt.show()
+```
+
+```{r int_dynesty_tests}
+#############
+# processing
+#############
+t_int_dynesty_sample <- py$int_dynesty_sample
+
+############
+# plotting
+###########
+#pdf(paste0(getwd(), "/simple/integrated_dynesty/results/integrated_dynesty_report.pdf"), width = 10, height = 8)
+layout(rbind(c(0, 11, 11, 11, 11, 11),
+             c(12, 0, 1, 20, 20, 0),
+             c(13, 0, 5, 2, 0, 0),
+             c(14, 0, 6, 8, 3, 0),
+             c(15, 0, 7, 9, 10, 4),
+             c(0, 0, 16, 17, 18, 19)),
+       width = c(lcm(2), lcm(2), 1, 1, 1, 1),
+       height = c(lcm(2), 1, 1, 1, 1, lcm(3)))
+par(mar = rep(0, 4), las = 1, cex = 1, tck = 0.01)
+sapply(1:3, function(i) {
+  plot(density(t_int_dynesty_sample[, i]), main = "", xlab = "", ylab = "", xaxt = "n", yaxt = "n",
+       xlim = t_plotlims[i, ])
+  abline(v = true_values[i], col = "red")
+})
+cont = seq(5, 95, by = 10)
+plot(density(t_int_dynesty_sample[, 4]), main = "", xlab = paste("log", expression(xi)), ylab = "", yaxt = "n",
+     xlim = t_xilim)
+abline(v = true_values[4], col = "red")
+int_dynesty_kde <- kde(t_int_dynesty_sample[, index_mat[1, ]])
+plot(int_dynesty_kde, display = "filled.contour", cont = cont, col.fun = viridis::viridis,
+     xlab = "", ylab = paste("log", expression(theta)), xaxt = "n",
+     xlim = t_plotlims[1, ], ylim = t_plotlims[2, ])
+plot(int_dynesty_kde, cont = cont, display = "slice", add = TRUE)
+int_dynesty_kde <- kde(t_int_dynesty_sample[, index_mat[2, ]])
+plot(int_dynesty_kde, display = "filled.contour", cont = cont, col.fun = viridis::viridis,
+     xlab = "", ylab = paste("logit", expression(pi)), xaxt = "n",
+     xlim = t_plotlims[1, ], ylim = t_plotlims[3, ])
+plot(int_dynesty_kde, cont = cont, display = "slice", add = TRUE)
+int_dynesty_kde <- kde(t_int_dynesty_sample[, index_mat[3, ]])
+plot(int_dynesty_kde, display = "filled.contour", cont = cont, col.fun = viridis::viridis,
+     xlab = paste("log", expression(mu)), ylab = paste("log", expression(xi)),
+     xlim = t_plotlims[1, ], ylim = t_xilim)
+plot(int_dynesty_kde, cont = cont, display = "slice", add = TRUE)
+int_dynesty_kde <- kde(t_int_dynesty_sample[, index_mat[4, ]])
+plot(int_dynesty_kde, display = "filled.contour", cont = cont, col.fun = viridis::viridis,
+     xlab = "", ylab = "", xaxt = "n", yaxt = "n",
+     xlim = t_plotlims[2, ], ylim = t_plotlims[3, ])
+plot(int_dynesty_kde, cont = cont, display = "slice", add = TRUE)
+int_dynesty_kde <- kde(t_int_dynesty_sample[, index_mat[5, ]])
+plot(int_dynesty_kde, display = "filled.contour", cont = cont, col.fun = viridis::viridis,
+     xlab = paste("log", expression(theta)), ylab = "", yaxt = "n",
+     xlim = t_plotlims[2, ], ylim = t_xilim)
+plot(int_dynesty_kde, cont = cont, display = "slice", add = TRUE)
+int_dynesty_kde <- kde(t_int_dynesty_sample[, index_mat[6, ]])
+plot(int_dynesty_kde, display = "filled.contour", cont = cont, col.fun = viridis::viridis,
+     xlab = paste("logit", expression(pi)), ylab = "", yaxt = "n",
+     xlim = t_plotlims[3, ], ylim = t_xilim)
+plot(int_dynesty_kde, cont = cont, display = "slice", add = TRUE)
+#mtext("Density and contour plots of parameters", cex = 1.5, font = 2, outer = TRUE)
+psrt = 60
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.25, "Density and contour plots of parameters", cex = 1.3, font = 2)
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("log("*mu*")"), srt = psrt)
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("log("*theta*")"), srt = psrt)
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("logit("*pi[d]*")"), srt = psrt)
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("log("*xi*")"), srt = psrt)
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("log("*mu*")"))
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("log("*theta*")"))
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5,  expression("logit("*pi[d]*")"))
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("log("*xi*")"))
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.75, "NegBin parametrization", font = 2, cex = 1.1)
+#dev.off()
+```
+
+```{r int_dynesty_tests_puregamma}
+#############
+# processing
+#############
+t_int_dynesty_sample <- cbind(log(py$int_dynesty_sample[, 1:2]), logit(py$int_dynesty_sample[, 3]), log(py$int_dynesty_sample[, 4]))
+
+############
+# plotting
+###########
+pdf(paste0(getwd(), "/simple/integrated_dynesty/puregamma/results/integrated_dynesty_report.pdf"), width = 10, height = 8)
+layout(rbind(c(0, 7, 7, 7, 7),
+             c(8, 0, 1, 14, 14),
+             c(9, 0, 4, 2, 0),
+             c(10, 0, 5, 6, 3),
+             c(0, 0, 11, 12, 13)),
+       width = c(lcm(2), lcm(2), 1, 1, 1),
+       height = c(lcm(2), 1, 1, 1, 1, lcm(3)))
+par(mar = rep(0, 4), las = 1, cex = 1, tck = 0.01)
+sapply(1:2, function(i) {
+  plot(density(t_int_dynesty_sample[, i]), main = "", xlab = "", ylab = "", xaxt = "n", yaxt = "n")
+  abline(v = true_values[i], col = "red")
+})
+cont = seq(5, 95, by = 10)
+plot(density(t_int_dynesty_sample[, 4]), main = "", xlab = paste("log", expression(xi)), ylab = "", yaxt = "n")
+abline(v = true_values[4], col = "red")
+int_dynesty_kde <- kde(t_int_dynesty_sample[, index_mat[1, ]])
+plot(int_dynesty_kde, display = "filled.contour", cont = cont, col.fun = viridis::viridis,
+     xlab = "", ylab = paste("log", expression(theta)), xaxt = "n")
+plot(int_dynesty_kde, cont = cont, display = "slice", add = TRUE)
+int_dynesty_kde <- kde(t_int_dynesty_sample[, index_mat[2, ]])
+plot(int_dynesty_kde, display = "filled.contour", cont = cont, col.fun = viridis::viridis,
+     xlab = "", ylab = paste("logit", expression(pi)), xaxt = "n")
+plot(int_dynesty_kde, cont = cont, display = "slice", add = TRUE)
+int_dynesty_kde <- kde(t_int_dynesty_sample[, index_mat[3, ]])
+plot(int_dynesty_kde, display = "filled.contour", cont = cont, col.fun = viridis::viridis,
+     xlab = paste("log", expression(mu)), ylab = paste("log", expression(xi)))
+plot(int_dynesty_kde, cont = cont, display = "slice", add = TRUE)
+
+#mtext("Density and contour plots of parameters", cex = 1.5, font = 2, outer = TRUE)
+psrt = 60
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.25, "Density and contour plots of parameters", cex = 1.3, font = 2)
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("log("*mu*")"), srt = psrt)
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("log("*theta*")"), srt = psrt)
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("log("*xi*")"), srt = psrt)
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("log("*mu*")"))
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("log("*theta*")"))
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("log("*xi*")"))
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.75, "NegBin parametrization", font = 2, cex = 1.1)
+dev.off()
+```
+
+```{r int_dynesty_tests_nolog}
+#############
+# processing
+#############
+int_dynesty_sample <- cbind(py$int_dynesty_sample[, 1], log(py$int_dynesty_sample[, 2]), py$int_dynesty_sample[, 3], log(py$int_dynesty_sample[, 4]))
+
+############
+# plotting
+###########
+pdf(paste0(getwd(), "/simple/integrated_dynesty/results/integrated_dynesty_report_nolog.pdf"), width = 10, height = 8)
+layout(rbind(c(0, 11, 11, 11, 11, 11),
+             c(12, 0, 1, 20, 20, 0),
+             c(13, 0, 5, 2, 0, 0),
+             c(14, 0, 6, 8, 3, 0),
+             c(15, 0, 7, 9, 10, 4),
+             c(0, 0, 16, 17, 18, 19)),
+       width = c(lcm(2), lcm(2), 1, 1, 1, 1),
+       height = c(lcm(2), 1, 1, 1, 1, lcm(3)))
+par(mar = rep(0, 4), las = 1, cex = 1, tck = 0.01)
+sapply(1:3, function(i) {
+  plot(density(int_dynesty_sample[, i]), main = "", xlab = "", ylab = "", xaxt = "n", yaxt = "n")
+  abline(v = true_values_nolog[i], col = "red")
+})
+cont = seq(5, 95, by = 10)
+plot(density(int_dynesty_sample[, 4]), main = "", xlab = paste("log", expression(xi)), ylab = "", yaxt = "n")
+abline(v = true_values_nolog[4], col = "red")
+int_dynesty_kde <- kde(int_dynesty_sample[, index_mat[1, ]])
+plot(int_dynesty_kde, display = "filled.contour", cont = cont, col.fun = viridis::viridis,
+     xlab = "", ylab = paste("log", expression(theta)), xaxt = "n")
+plot(int_dynesty_kde, cont = cont, display = "slice", add = TRUE)
+int_dynesty_kde <- kde(int_dynesty_sample[, index_mat[2, ]])
+plot(int_dynesty_kde, display = "filled.contour", cont = cont, col.fun = viridis::viridis,
+     xlab = "", ylab = paste("logit", expression(pi)), xaxt = "n")
+plot(int_dynesty_kde, cont = cont, display = "slice", add = TRUE)
+int_dynesty_kde <- kde(int_dynesty_sample[, index_mat[3, ]])
+plot(int_dynesty_kde, display = "filled.contour", cont = cont, col.fun = viridis::viridis,
+     xlab = paste("log", expression(mu)), ylab = paste("log", expression(xi)))
+plot(int_dynesty_kde, cont = cont, display = "slice", add = TRUE)
+int_dynesty_kde <- kde(int_dynesty_sample[, index_mat[4, ]])
+plot(int_dynesty_kde, display = "filled.contour", cont = cont, col.fun = viridis::viridis,
+     xlab = "", ylab = "", xaxt = "n", yaxt = "n")
+plot(int_dynesty_kde, cont = cont, display = "slice", add = TRUE)
+int_dynesty_kde <- kde(int_dynesty_sample[, index_mat[5, ]])
+plot(int_dynesty_kde, display = "filled.contour", cont = cont, col.fun = viridis::viridis,
+     xlab = paste("log", expression(theta)), ylab = "", yaxt = "n")
+plot(int_dynesty_kde, cont = cont, display = "slice", add = TRUE)
+int_dynesty_kde <- kde(int_dynesty_sample[, index_mat[6, ]])
+plot(int_dynesty_kde, display = "filled.contour", cont = cont, col.fun = viridis::viridis,
+     xlab = paste("logit", expression(pi)), ylab = "", yaxt = "n")
+plot(int_dynesty_kde, cont = cont, display = "slice", add = TRUE)
+#mtext("Density and contour plots of parameters", cex = 1.5, font = 2, outer = TRUE)
+psrt = 60
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.25, "Density and contour plots of parameters", cex = 1.3, font = 2)
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("log("*mu*")"), srt = psrt)
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("log("*theta*")"), srt = psrt)
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("logit("*pi[d]*")"), srt = psrt)
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("log("*xi*")"), srt = psrt)
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("log("*mu*")"))
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("log("*theta*")"))
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5,  expression("logit("*pi[d]*")"))
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("log("*xi*")"))
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.75, "NegBin parametrization", font = 2, cex = 1.1)
+dev.off()
+```
+
+```{python emcee_integrated_kernel}
+# python sampler_setup chunk (starting from line 51) needed, but python emcee chunk and the following not needed.
+
+###################
+# kernel function
+###################
+def t_int_kernel_gamma(zeta,
+                       D = D, A = A, Time = Time,
+                       a = a, R = R, e = e, mu_theta_param = True):
+    # reshape the parameter space input if necessary
+    if len(np.shape(zeta)) == 1:
+      zeta = zeta.reshape((1, len(zeta)))
+    
+    D = np.array(D)
+    A = np.array(A)
+    Time = np.array(Time)
+    a = np.array(a)
+    R = np.array(R)
+    e = np.array(e)
+    return(r.t_int_kernel_gamma(zeta,
+                                D = D,
+                                A = A,
+                                Time = Time,
+                                a = r.unlist(a),
+                                R = r.unlist(R),
+                                e = r.unlist(e),
+                                mu_theta_param = mu_theta_param))
+
+#############################
+# emcee parameters
+#######################
+import emcee
+from tqdm import tqdm
+import h5py
+# sampler settings
+np.random.seed(40)
+nwalkers = int(8)
+ndim = 4
+emcee_int_sampler = emcee.EnsembleSampler(
+  nwalkers = nwalkers,
+  ndim = ndim,
+  log_prob_fn = t_int_kernel_gamma,
+  vectorize = True
+  #args = D
+)
+
+##################
+# initial values
+#################
+turb_scale = 2
+turb_shape = r.rnorm(n = nwalkers, mean = t_mu, sd = np.abs((t_mu + 1) / turb_scale))
+turb_shape = np.expand_dims(np.array(turb_shape), axis = -1)
+turb_rate = np.array(r.rnorm(n = nwalkers, mean = t_theta, sd = np.abs((t_theta + 1) / turb_scale)))
+if(any(turb_rate <= np.array(-50))): 
+  turb_rate[turb_rate <= np.array(-50)] = -50
+turb_rate = np.expand_dims(np.array(turb_rate), axis = -1)
+turb_pid = r.rnorm(n = nwalkers, mean = t_pid, sd = np.abs((t_pid + 1) / turb_scale))
+turb_pid = r.runif(n = nwalkers)
+turb_pid = np.expand_dims(np.array(turb_pid), axis = -1)
+turb_xi = r.rnorm(n = nwalkers, mean = t_xi, sd = np.abs((t_xi + 1) / turb_scale))
+turb_xi = np.expand_dims(np.array(turb_xi), axis = -1)
+t_int_init = np.hstack((turb_shape, turb_rate, turb_pid, turb_xi))
+
+# testing the posterior kernel function in python
+t_int_kernel_gamma(zeta = t_int_init, D = D, mu_theta_param = True)
+t_int_kernel_gamma(t_int_init[[1], :], D = D, mu_theta_param = True)
+
+
+#warnings.filterwarnings("ignore")
+#HDFbackend = emcee.backends.HDFBackend("emcee_chains")
+r.tic()
+emcee_int_result = emcee_int_sampler.run_mcmc(t_int_init, nsteps = 60000, progress = True,
+  skip_initial_state_check = True)
+emcee_int_run_time = r.toc()
+
+emcee_int_sample = emcee_int_sampler.get_chain()
+t_int_kernel_gamma(zeta = emcee_int_result.coords, D = D)
+emcee_int_flat_sample = emcee_int_sampler.get_chain(flat = True)
+emcee_int_sampler.get_autocorr_time()
+
+np.mean(emcee_int_flat_sample[:, 1])
+r.plot(r.density(emcee_int_flat_sample[:, 1]), type = "l")
+r.abline(v = r.t_theta, col = "red")
+```
+
+```{r integrated_kernel_tests}
+###################
+# integrated emcee diagnostics
+###################
+thinning <- 5
+burnin <- 99
+#burnin_flat <- which(py$emcee_int_flat_sample %in% py$emcee_int_sample[, py$nwalkers, ])[burnin]
+end <- nrow(py$emcee_int_sample[, 1, ]) # 3981 points from parameter space in total
+end_flat <- nrow(py$emcee_int_flat_sample)
+
+mcmc_flat <- function(data = NA, start = burnin + 1, end = nrow(py$emcee_int_sample[, 1, ]), thin = 1, nwalkers = py$nwalkers) {
+  select_flat <- function(walker) {
+    which(py$emcee_int_flat_sample %in% py$emcee_int_sample[, walker, 1])
+  }
+  index_flat <- sort(sapply(1:nwalkers, select_flat)[seq(from = start, to = end, by = thin), ])
+  data <- mcmc(data = data, start = 1, end = end_flat, thin = 1)[index_flat, ]
+  attr(data, "mcpar") <- c(start, end, thin)
+  attr(data, "class") <- "mcmc"
+  data
+}
+
+
+emcee_int_plots <- function(index) {
+  # select the chain in emcee and retrive mu and theta
+  emcee_mcmc <- mcmc(py$emcee_int_sample[, index, ], thin = thinning, start = burnin + 1, end = end)
+  #emcee_mu <- emcee_mcmc[, 1] - emcee_mcmc[, 2]
+  #emcee_theta <- emcee_mcmc[, 1] - 2 * emcee_mcmc[, 2]
+  #emcee_mcmc[, 1:2] <- cbind(emcee_mu, emcee_theta)
+  
+  # plots
+  par(mar = rep(1, 4), oma = rep(1, 4))
+  coda::crosscorr.plot(emcee_mcmc, main = paste("chain", index))
+  coda::autocorr.plot(emcee_mcmc)
+  
+  print(paste("chain", index))
+}
+
+emcee_int_diagnostics <- function(index) {
+  # select the chain in emcee
+  emcee_mcmc <- mcmc(py$emcee_int_sample[, index, ], thin = thinning, start = burnin + 1, end = end)
+  #emcee_mu <- emcee_mcmc[, 1] / emcee_mcmc[, 2]
+  #emcee_theta <- emcee_mcmc[, 1] / emcee_mcmc[, 2]^2
+  #emcee_mcmc[, 1:2] <- cbind(emcee_mu, emcee_theta)
+  
+  # diagnostic statistics
+  size <- coda::effectiveSize(emcee_mcmc)
+  geweke <- coda::geweke.diag(emcee_mcmc)
+  raftery <- coda::raftery.diag(emcee_mcmc)
+  heidel <- heidel.diag(emcee_mcmc) # a bug in the heidel function
+  
+  list(print(paste("chain", index)),
+       print("effective size"), 
+       size, 
+       print("Geweke diagnostics"),
+       geweke, 
+       print("Raftery diagnostics"),
+       raftery,
+       print("Heidel diagnostics"),
+       heidel)
+}
+
+# testing
+emcee_int_plots(index = 1)
+emcee_int_diagnostics(index = 1)
+# saving results
+# diagnostic plots
+pdf(paste0(getwd(), "/simple/integrated_emcee/diagnostics/mu_theta_emcee_diagnostics.pdf"))
+sapply(1:py$nwalkers, emcee_int_plots)
+dev.off()
+
+# diagnostic statistics
+sink(file = paste0(getwd(), "/simple/integrated_emcee/diagnostics/mu_theta_emcee_diagnostics.txt"))
+emcee_int_diagnostics(1)
+emcee_int_diagnostics(2)
+emcee_int_diagnostics(3)
+emcee_int_diagnostics(4)
+emcee_int_diagnostics(5)
+emcee_int_diagnostics(6)
+emcee_int_diagnostics(7)
+emcee_int_diagnostics(8)
+#sapply(1:py$nwalkers, emcee_diagnostics)
+emcee_mcmc <- mcmc(py$emcee_int_sample[, 1, ], thin = thinning, start = burnin + 1, end = end)
+emcee_mu <- emcee_mcmc[, 1] / emcee_mcmc[, 2]
+emcee_theta <- emcee_mcmc[, 1] / emcee_mcmc[, 2]^2
+emcee_mcmc[, 1:2] <- cbind(emcee_mu, emcee_theta)
+emcee_list <- list(emcee_mcmc)
+for (i in 2:py$nwalkers) {
+  emcee_mcmc <- mcmc(py$emcee_int_sample[, i, ], thin = thinning, start = burnin + 1, end = end)
+  emcee_mu <- emcee_mcmc[, 1] / emcee_mcmc[, 2]
+  emcee_theta <- emcee_mcmc[, 1] / emcee_mcmc[, 2]^2
+  emcee_mcmc[, 1:2] <- cbind(emcee_mu, emcee_theta)
+  emcee_mcmc <- list(emcee_mcmc)
+  emcee_list = c(emcee_list, emcee_mcmc)
+}
+print("Gelman-Rubin diagnostics")
+coda::gelman.diag(as.mcmc.list(emcee_list))
+sink()
+
+
+##############
+# emcee sample plots
+##############
+true_values <- c(py$t_mu, py$t_theta, py$t_pid, py$t_xi)
+#param_name <- c("trans_mu", "trans_theta", "trans_pid", "trans_xi")
+emcee_int_results <- function(index) {
+  # select the chain in emcee and retrive mu and theta
+  emcee_mcmc <- mcmc(py$emcee_int_sample[, index, ], thin = thinning, start = burnin + 1, end = end)
+  #emcee_mu <- emcee_mcmc[, 1] - emcee_mcmc[, 2]
+  #emcee_theta <- emcee_mcmc[, 1] - 2 * emcee_mcmc[, 2]
+  #emcee_mcmc[, 1:2] <- cbind(emcee_mu, emcee_theta)
+  emcee_mcmc_mat <- matrix(unlist(emcee_mcmc), ncol = py$ndim)
+  
+  # results plotting function
+  par(mar = rep(1.5, 4), oma = rep(1, 4), mfrow = rep(2, 2))
+  plot(emcee_mcmc)
+  mcmc_plotresult <- function(i) {
+    plot(density(emcee_mcmc_mat[, i]), 
+         main = paste("Density of chain", index, ",", param_name[i]))
+    abline(v = true_values[i], col = "red")
+    }
+  
+  mcmc_plotresult(1)
+  mcmc_plotresult(2)
+  mcmc_plotresult(3)
+  mcmc_plotresult(4)
+}
+
+emcee_int_all_density <- function(i) {
+  # select the chain in emcee and retrive mu and theta
+  emcee_mcmc <- mcmc_flat(py$emcee_int_flat_sample, thin = thinning, start = burnin + 1, end = end)
+  #emcee_mu <- emcee_mcmc[, 1] - emcee_mcmc[, 2]
+  #emcee_theta <- emcee_mcmc[, 1] - 2 * emcee_mcmc[, 2]
+  #emcee_mcmc[, 1:2] <- cbind(emcee_mu, emcee_theta)
+  #emcee_mcmc_mat <- matrix(unlist(emcee_mcmc), ncol = py$ndim)
+  
+  plot(density(emcee_mcmc[, i]), main = paste("ALL", param_name[i]))
+  abline(v = true_values[i], col = "red")
+  print(paste("plot", i))
+}
+
+pdf(paste0(getwd(), "/simple/integrated_emcee/results/int_emcee_results.pdf"))
+sapply(1:4, emcee_int_all_density)
+sapply(1:py$nwalkers, emcee_int_results)
+dev.off()
+
+##########################
+# contour plots
+#########################
+# thinning
+emcee_int_thin_flat <- mcmc_flat(data = py$emcee_int_flat_sample, thin = thinning)
+#colnames(emcee_int_thin_flat) <- param_name
+emcee_i_thin_flat <- emcee_int_thin_flat
+emcee_i_thin_flat[, 1] <- 2 * emcee_int_thin_flat[, 1] - emcee_int_thin_flat[, 2]
+emcee_i_thin_flat[, 2] <- emcee_int_thin_flat[, 1] - emcee_int_thin_flat[, 2]
+
+# plotting functions
+emcee_int_contour_3d <- function(index_vec) {
+  emcee_kde <- kde(emcee_int_thin_flat[, index_vec])
+  plot(emcee_kde, display = "rgl", xlab = param_name[index_vec[1]], ylab = param_name[index_vec[2]], zlab = param_name[index_vec[3]])
+}
+
+emcee_int_contour_2d <- function(index_vec, cont = seq(5, 95, by = 10)) {
+  emcee_kde <- kde(emcee_int_thin_flat[, index_vec])
+  plot(emcee_kde, display = "persp", col.fun = viridis::viridis,
+       xlab = param_name[index_vec[1]], ylab = param_name[index_vec[2]])
+  plot(emcee_kde, display = "filled.contour", cont = cont, col.fun = viridis::viridis,
+       xlab = param_name[index_vec[1]], ylab = param_name[index_vec[2]])
+  plot(emcee_kde, cont = cont, display = "slice", add = TRUE)
+  #abline(v = true_values[i], col = "red")
+}
+
+# exploration
+#emcee_int_contour_3d(1:3)
+#emcee_int_contour_3d(c(1, 3, 4))
+#emcee_int_contour_3d(2:4)
+
+# plotting
+index_mat <- cbind(rep(1:3, 3:1), c(2:4, 3:4, 4))
+pdf(paste0(getwd(), "/simple/integrated_emcee/results/int_emcee_contours.pdf"))
+apply(index_mat, 1, emcee_int_contour_2d)
+dev.off()
+
+pdf(paste0(getwd(), "/simple/integrated_emcee/results/int_emcee_report.pdf"), width = 10, height = 8)
+layout(rbind(c(0, 11, 11, 11, 11, 11),
+             c(12, 0, 1, 20, 20, 0),
+             c(13, 0, 5, 2, 0, 0),
+             c(14, 0, 6, 8, 3, 0),
+             c(15, 0, 7, 9, 10, 4),
+             c(0, 0, 16, 17, 18, 19)),
+       width = c(lcm(2), lcm(2), 1, 1, 1, 1),
+       height = c(lcm(2), 1, 1, 1, 1, lcm(3)))
+par(mar = rep(0, 4), las = 1, cex = 1, tck = 0.01)
+sapply(1:3, function(i) {
+  plot(density(emcee_int_thin_flat[, i]), main = "", xlab = "", ylab = "", xaxt = "n", yaxt = "n")
+  abline(v = true_values[i], col = "red")
+})
+plot(density(emcee_int_thin_flat[, 4]), main = "", xlab = paste("log", expression(xi)), ylab = "", yaxt = "n")
+abline(v = true_values[4], col = "red")
+emcee_kde <- kde(emcee_int_thin_flat[, index_mat[1, ]])
+plot(emcee_kde, display = "filled.contour", cont = cont, col.fun = viridis::viridis,
+     xlab = "", ylab = paste("log", expression(theta)), xaxt = "n")
+plot(emcee_kde, cont = cont, display = "slice", add = TRUE)
+emcee_kde <- kde(emcee_int_thin_flat[, index_mat[2, ]])
+plot(emcee_kde, display = "filled.contour", cont = cont, col.fun = viridis::viridis,
+     xlab = "", ylab = paste("logit", expression(pi)), xaxt = "n")
+plot(emcee_kde, cont = cont, display = "slice", add = TRUE)
+emcee_kde <- kde(emcee_int_thin_flat[, index_mat[3, ]])
+plot(emcee_kde, display = "filled.contour", cont = cont, col.fun = viridis::viridis,
+     xlab = paste("log", expression(mu)), ylab = paste("log", expression(xi)))
+plot(emcee_kde, cont = cont, display = "slice", add = TRUE)
+emcee_kde <- kde(emcee_int_thin_flat[, index_mat[4, ]])
+plot(emcee_kde, display = "filled.contour", cont = cont, col.fun = viridis::viridis,
+     xlab = "", ylab = "", xaxt = "n", yaxt = "n")
+plot(emcee_kde, cont = cont, display = "slice", add = TRUE)
+emcee_kde <- kde(emcee_int_thin_flat[, index_mat[5, ]])
+plot(emcee_kde, display = "filled.contour", cont = cont, col.fun = viridis::viridis,
+     xlab = paste("log", expression(theta)), ylab = "", yaxt = "n")
+plot(emcee_kde, cont = cont, display = "slice", add = TRUE)
+emcee_kde <- kde(emcee_int_thin_flat[, index_mat[6, ]])
+plot(emcee_kde, display = "filled.contour", cont = cont, col.fun = viridis::viridis,
+     xlab = paste("logit", expression(pi)), ylab = "", yaxt = "n")
+plot(emcee_kde, cont = cont, display = "slice", add = TRUE)
+#mtext("Density and contour plots of parameters", cex = 1.5, font = 2, outer = TRUE)
+psrt = 60
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.25, "Density and contour plots of parameters", cex = 1.3, font = 2)
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("log("*mu*")"), srt = psrt)
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("log("*theta*")"), srt = psrt)
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("logit("*pi[d]*")"), srt = psrt)
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("log("*xi*")"), srt = psrt)
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("log("*mu*")"))
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("log("*theta*")"))
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5,  expression("logit("*pi[d]*")"))
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("log("*xi*")"))
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.75, "NegBin parametrization", font = 2, cex = 1.1)
+dev.off()
+
+emcee_i_contour_2d <- function(index_vec, cont = seq(5, 95, by = 10)) {
+  emcee_kde <- kde(emcee_i_thin_flat[, index_vec])
+  plot(emcee_kde, display = "filled.contour", cont = cont, col.fun = viridis::viridis,
+       xlab = "log shape", ylab = "log rate", main = "Contour plot of posterior log shape vs log rate")
+  plot(emcee_kde, cont = cont, display = "slice", add = TRUE)
+  #abline(v = true_values[i], col = "red")
+}
+pdf("simple/integrated_emcee/results/shape_rate_posterior.pdf")
+emcee_i_contour_2d(1:2)
+dev.off()
+```
+
+```{r integrated_emcee_puregamma}
+index_mat <- rbind(c(1, 2),
+                   c(1, 4),
+                   c(2, 4))
+
+thinning <- 5
+burnin <- 99
+#burnin_flat <- which(py$emcee_int_flat_sample %in% py$emcee_int_sample[, py$nwalkers, ])[burnin]
+end <- nrow(py$emcee_int_sample[, 1, ]) # 3981 points from parameter space in total
+end_flat <- nrow(py$emcee_int_flat_sample)
+
+mcmc_flat <- function(data = NA, start = burnin + 1, end = nrow(py$emcee_int_sample[, 1, ]), thin = 1, nwalkers = py$nwalkers) {
+  select_flat <- function(walker) {
+    which(py$emcee_int_flat_sample %in% py$emcee_int_sample[, walker, 1])
+  }
+  index_flat <- sort(sapply(1:nwalkers, select_flat)[seq(from = start, to = end, by = thin), ])
+  data <- mcmc(data = data, start = 1, end = end_flat, thin = 1)[index_flat, ]
+  attr(data, "mcpar") <- c(start, end, thin)
+  attr(data, "class") <- "mcmc"
+  data
+}
+
+emcee_int_plots <- function(index) {
+  # select the chain in emcee and retrive mu and theta
+  emcee_mcmc <- mcmc(py$emcee_int_sample[, index, ], thin = thinning, start = burnin + 1, end = end)
+  #emcee_mu <- emcee_mcmc[, 1] - emcee_mcmc[, 2]
+  #emcee_theta <- emcee_mcmc[, 1] - 2 * emcee_mcmc[, 2]
+  #emcee_mcmc[, 1:2] <- cbind(emcee_mu, emcee_theta)
+  
+  # plots
+  par(mar = rep(1, 4), oma = rep(1, 4))
+  coda::crosscorr.plot(emcee_mcmc, main = paste("chain", index))
+  coda::autocorr.plot(emcee_mcmc)
+  
+  print(paste("chain", index))
+}
+
+emcee_int_diagnostics <- function(index) {
+  # select the chain in emcee
+  emcee_mcmc <- mcmc(py$emcee_int_sample[, index, ], thin = thinning, start = burnin + 1, end = end)
+  #emcee_mu <- emcee_mcmc[, 1] / emcee_mcmc[, 2]
+  #emcee_theta <- emcee_mcmc[, 1] / emcee_mcmc[, 2]^2
+  #emcee_mcmc[, 1:2] <- cbind(emcee_mu, emcee_theta)
+  
+  # diagnostic statistics
+  size <- coda::effectiveSize(emcee_mcmc)
+  geweke <- coda::geweke.diag(emcee_mcmc)
+  raftery <- coda::raftery.diag(emcee_mcmc)
+  heidel <- heidel.diag(emcee_mcmc) # a bug in the heidel function
+  
+  list(print(paste("chain", index)),
+       print("effective size"), 
+       size, 
+       print("Geweke diagnostics"),
+       geweke, 
+       print("Raftery diagnostics"),
+       raftery,
+       print("Heidel diagnostics"),
+       heidel)
+}
+
+# testing
+emcee_int_plots(index = 1)
+#emcee_int_diagnostics(index = 1)
+# saving results
+# diagnostic plots
+pdf(paste0(getwd(), "/simple/integrated_emcee/puregamma/diagnostics/int_emcee_diagnostics.pdf"))
+sapply(1:py$nwalkers, emcee_int_plots)
+dev.off()
+
+# diagnostic statistics
+sink(file = paste0(getwd(), "/simple/integrated_emcee/puregamma/diagnostics/int_emcee_diagnostics.txt"))
+#sapply(1:py$nwalkers, emcee_diagnostics)
+emcee_mcmc <- mcmc(py$emcee_int_sample[, 1, ], thin = thinning, start = burnin + 1, end = end)
+emcee_mu <- emcee_mcmc[, 1] / emcee_mcmc[, 2]
+emcee_theta <- emcee_mcmc[, 1] / emcee_mcmc[, 2]^2
+emcee_mcmc[, 1:2] <- cbind(emcee_mu, emcee_theta)
+emcee_list <- list(emcee_mcmc)
+for (i in 2:py$nwalkers) {
+  emcee_mcmc <- mcmc(py$emcee_int_sample[, i, ], thin = thinning, start = burnin + 1, end = end)
+  emcee_mu <- emcee_mcmc[, 1] / emcee_mcmc[, 2]
+  emcee_theta <- emcee_mcmc[, 1] / emcee_mcmc[, 2]^2
+  emcee_mcmc[, 1:2] <- cbind(emcee_mu, emcee_theta)
+  emcee_mcmc <- list(emcee_mcmc)
+  emcee_list = c(emcee_list, emcee_mcmc)
+}
+print("Gelman-Rubin diagnostics")
+coda::gelman.diag(as.mcmc.list(emcee_list))
+sink()
+
+
+##############
+# emcee sample plots
+##############
+true_values <- c(py$t_mu, py$t_theta, py$t_pid, py$t_xi)
+#param_name <- c("trans_mu", "trans_theta", "trans_pid", "trans_xi")
+emcee_int_results <- function(index) {
+  # select the chain in emcee and retrive mu and theta
+  emcee_mcmc <- mcmc(py$emcee_int_sample[, index, ], thin = thinning, start = burnin + 1, end = end)
+  #emcee_mu <- emcee_mcmc[, 1] - emcee_mcmc[, 2]
+  #emcee_theta <- emcee_mcmc[, 1] - 2 * emcee_mcmc[, 2]
+  #emcee_mcmc[, 1:2] <- cbind(emcee_mu, emcee_theta)
+  emcee_mcmc_mat <- matrix(unlist(emcee_mcmc), ncol = py$ndim)
+  
+  # results plotting function
+  par(mar = rep(1.5, 4), oma = rep(1, 4), mfrow = rep(2, 2))
+  plot(emcee_mcmc)
+  mcmc_plotresult <- function(i) {
+    plot(density(emcee_mcmc_mat[, i]), 
+         main = paste("Density of chain", index, ",", param_name[i]))
+    abline(v = true_values[i], col = "red")
+    }
+  
+  mcmc_plotresult(1)
+  mcmc_plotresult(2)
+  mcmc_plotresult(3)
+  mcmc_plotresult(4)
+}
+
+emcee_int_all_density <- function(i) {
+  # select the chain in emcee and retrive mu and theta
+  emcee_mcmc <- mcmc_flat(py$emcee_int_flat_sample, thin = thinning, start = burnin + 1, end = end)
+  #emcee_mu <- emcee_mcmc[, 1] - emcee_mcmc[, 2]
+  #emcee_theta <- emcee_mcmc[, 1] - 2 * emcee_mcmc[, 2]
+  #emcee_mcmc[, 1:2] <- cbind(emcee_mu, emcee_theta)
+  #emcee_mcmc_mat <- matrix(unlist(emcee_mcmc), ncol = py$ndim)
+  
+  plot(density(emcee_mcmc[, i]), main = paste("ALL", param_name[i]))
+  abline(v = true_values[i], col = "red")
+  print(paste("plot", i))
+}
+
+pdf(paste0(getwd(), "/simple/integrated_emcee/puregamma/results/int_emcee_results.pdf"))
+sapply(1:4, emcee_int_all_density)
+sapply(1:py$nwalkers, emcee_int_results)
+dev.off()
+
+##########################
+# contour plots
+#########################
+# thinning
+emcee_int_thin_flat <- mcmc_flat(data = py$emcee_int_flat_sample, thin = thinning)
+#colnames(emcee_int_thin_flat) <- param_name
+emcee_i_thin_flat <- emcee_int_thin_flat
+emcee_i_thin_flat[, 1] <- 2 * emcee_int_thin_flat[, 1] - emcee_int_thin_flat[, 2]
+emcee_i_thin_flat[, 2] <- emcee_int_thin_flat[, 1] - emcee_int_thin_flat[, 2]
+
+# plotting functions
+emcee_int_contour_3d <- function(index_vec) {
+  emcee_kde <- kde(emcee_int_thin_flat[, index_vec])
+  plot(emcee_kde, display = "rgl", xlab = param_name[index_vec[1]], ylab = param_name[index_vec[2]], zlab = param_name[index_vec[3]])
+}
+
+emcee_int_contour_2d <- function(index_vec, cont = seq(5, 95, by = 10)) {
+  emcee_kde <- kde(emcee_int_thin_flat[, index_vec])
+  plot(emcee_kde, display = "persp", col.fun = viridis::viridis,
+       xlab = param_name[index_vec[1]], ylab = param_name[index_vec[2]])
+  plot(emcee_kde, display = "filled.contour", cont = cont, col.fun = viridis::viridis,
+       xlab = param_name[index_vec[1]], ylab = param_name[index_vec[2]])
+  plot(emcee_kde, cont = cont, display = "slice", add = TRUE)
+  #abline(v = true_values[i], col = "red")
+}
+
+# exploration
+#emcee_int_contour_3d(1:3)
+#emcee_int_contour_3d(c(1, 3, 4))
+#emcee_int_contour_3d(2:4)
+
+# plotting
+pdf(paste0(getwd(), "/simple/integrated_emcee/results/int_emcee_contours.pdf"))
+apply(index_mat, 1, emcee_int_contour_2d)
+dev.off()
+
+pdf(paste0(getwd(), "/simple/integrated_emcee/puregamma/results/int_emcee_report.pdf"), width = 10, height = 8)
+layout(rbind(c(0, 7, 7, 7, 7),
+             c(8, 0, 1, 14, 14),
+             c(9, 0, 4, 2, 0),
+             c(10, 0, 5, 6, 3),
+             c(0, 0, 11, 12, 13)),
+       width = c(lcm(2), lcm(2), 1, 1, 1),
+       height = c(lcm(2), 1, 1, 1, 1, lcm(3)))
+par(mar = rep(0, 4), las = 1, cex = 1, tck = 0.01)
+sapply(1:2, function(i) {
+  plot(density(emcee_int_thin_flat[, i]), main = "", xlab = "", ylab = "", xaxt = "n", yaxt = "n")
+  abline(v = true_values[i], col = "red")
+})
+plot(density(emcee_int_thin_flat[, 4]), main = "", xlab = paste("log", expression(xi)), ylab = "", yaxt = "n")
+abline(v = true_values[4], col = "red")
+emcee_kde <- kde(emcee_int_thin_flat[, index_mat[1, ]])
+plot(emcee_kde, display = "filled.contour", cont = cont, col.fun = viridis::viridis,
+     xlab = "", ylab = paste("log", expression(theta)), xaxt = "n")
+plot(emcee_kde, cont = cont, display = "slice", add = TRUE)
+emcee_kde <- kde(emcee_int_thin_flat[, index_mat[2, ]])
+plot(emcee_kde, display = "filled.contour", cont = cont, col.fun = viridis::viridis,
+     xlab = "", ylab = paste("logit", expression(pi)), xaxt = "n")
+plot(emcee_kde, cont = cont, display = "slice", add = TRUE)
+emcee_kde <- kde(emcee_int_thin_flat[, index_mat[3, ]])
+plot(emcee_kde, display = "filled.contour", cont = cont, col.fun = viridis::viridis,
+     xlab = paste("log", expression(mu)), ylab = paste("log", expression(xi)))
+plot(emcee_kde, cont = cont, display = "slice", add = TRUE)
+
+#mtext("Density and contour plots of parameters", cex = 1.5, font = 2, outer = TRUE)
+psrt = 60
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.25, "Density and contour plots of parameters", cex = 1.3, font = 2)
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("log("*mu*")"), srt = psrt)
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("log("*theta*")"), srt = psrt)
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("log("*xi*")"), srt = psrt)
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("log("*mu*")"))
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("log("*theta*")"))
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("log("*xi*")"))
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.75, "NegBin parametrization", font = 2, cex = 1.1)
+dev.off()
+
+emcee_i_contour_2d <- function(index_vec, cont = seq(5, 95, by = 10)) {
+  emcee_kde <- kde(emcee_i_thin_flat[, index_vec])
+  plot(emcee_kde, display = "filled.contour", cont = cont, col.fun = viridis::viridis,
+       xlab = "log shape", ylab = "log rate", main = "Contour plot of posterior log shape vs log rate")
+  plot(emcee_kde, cont = cont, display = "slice", add = TRUE)
+  #abline(v = true_values[i], col = "red")
+}
+pdf("simple/integrated_emcee/puregamma/results/shape_rate_posterior.pdf")
+emcee_i_contour_2d(1:2)
+dev.off()
+
+```
+
+```{python ultranest_test}
+import numpy as np
+import ultranest
+
+x = np.linspace(400, 800, 100)
+yerr = 1.0
+y = np.random.normal(20 * np.exp(-0.5 * ((x-500)/4.2)**2), yerr)
+param_names = ['location', 'amplitude', 'Tina']
+import scipy.stats
+
+def my_prior_transform(cube):
+    params = cube.copy()
+
+    # transform location parameter: uniform prior
+    lo = 400
+    hi = 800
+    params[0] = cube[0] * (hi - lo) + lo
+
+    # transform amplitude parameter: log-uniform prior
+    lo = 0.1
+    hi = 100
+    params[1] = 10**(cube[1] * (np.log10(hi) - np.log10(lo)) + np.log10(lo))
+
+    # More complex prior, you can use the ppf functions
+    # from scipy.stats, such as scipy.stats.norm(mean, std).ppf
+
+    # transform for width:
+    # a log-normal centered at 1 +- 1dex
+    params[2] = 10**scipy.stats.norm.ppf(cube[2], 0, 1)
+
+    return params
+
+from numpy import log
+
+def my_likelihood(params):
+    location, amplitude, width = params
+    # compute intensity at every x position according to the model
+    y_model = amplitude * np.exp(-0.5 * ((x - location)/width)**2)
+    # compare model and data with gaussian likelihood:
+    like = -0.5 * (((y_model - y)/yerr)**2).sum()
+    return like
+
+sampler = ultranest.ReactiveNestedSampler(param_names, my_likelihood, my_prior_transform)
+result = sampler.run()
+sampler.print_results()
+```
+
+```{python ultranest}
+import ultranest
+from ultranest.plot import cornerplot
+
+# prior
+def prior_transform(u):
+  u = np.array(u)
+  #x = np.array(D[-1])
+  return r.prior_transform(u)
+
+def loglikelihood_dynesty(zeta):
+    #mu = zeta[0]
+    #theta = zeta[1]
+    #pid = zeta[2]
+    xi = zeta[3]
+    #aux = zeta[4]
+    Lambda = zeta[4:]
+    return r.loglik(xi, Lambda, D, A, float(Time), a, R, e)
+
+param_names_ultra = ["mu", "theta", "pid", "xi"] + ["Lambda" + str(j) for j in range(1, int(n + 1))]
+nlive = 1024      # number of (initial) live points
+bound = 'multi'   # use MutliNest algorithm
+ndims = int(n + 4)   
+np.random.seed(42)
+
+usampler = ultranest.ReactiveNestedSampler(param_names_ultra, loglikelihood_dynesty, prior_transform)
+uresult = usampler.run(min_ess = 10, max_iters = 1000)
+usampler.print_results()
+cornerplot(uresult)
+
+r.tic()
+dsampler.run_nested(nlive_init=nlive, n_effective = 100000)
+dynesty_run_time = r.toc()
+
+dres = dsampler.results
+raw_dynesty_sample = dres.samples
+dynesty_sample = dres.samples_equal()
+
+
+dlogZdynesty = dres.logz[-1]        # value of logZ
+dlogZerrdynesty = dres.logzerr[-1]  # estimate of the statistcal uncertainty on logZ
+
+# output marginal likelihood
+print('Marginalised evidence (using dynamic sampler) is {} ± {}'.format(dlogZdynesty, dlogZerrdynesty))
+
+# get the posterior samples
+dweights = np.exp(dres['logwt'] - dres['logz'][-1])
+dpostsamples = resample_equal(dres.samples, dweights)
+
+print('Number of posterior samples (using dynamic sampler) is {}'.format(dpostsamples.shape[0]))
+
+# plot posterior samples (if corner.py is installed)
+try:
+    import matplotlib as mpl
+    mpl.use("Agg") # force Matplotlib backend to Agg
+    import corner # import corner.py
+except ImportError:
+    sys.exit(1)
+
+fig = corner.corner(dpostsamples, labels=[r"$m$", r"$c$"], truths=[m, c], hist_kwargs={'density': True})
+fig = corner.corner(postsamples, fig=fig, color='r', hist_kwargs={'density': True})
+
+```
+
+```{r joint_analysis}
+comparison_qq <- function(i) {
+  qqplot(emcee_thin_flat[, i], emcee_int_thin_flat[, i], xlab = "Poisson parametrization", ylab = "NegBin parametrization", pch = 20, las = 1, main = paste("Q-Q plot of", param_name[i]))
+  abline(a = 0, b = 1, col = "red")
+}
+pdf("simple/integrated_emcee/joint_emcee_results/puregamma/em_intemQQplots.pdf")
+sapply(1:4, comparison_qq)
+dev.off()
+sink(file = paste0(getwd(), "/simple/integrated_emcee/joint_emcee_results/puregamma/em_intemKStest.txt"))
+sapply(1:4, function(i) ks.test(emcee_thin_flat[, i], emcee_int_thin_flat[, i]))
+sink()
+
+# emcee's vs dynesty
+comparison_dyem <- function(i) {
+  qqplot(emcee_thin_flat[, i], t_dynesty_sample[, i], xlab = "Poisson parametrization on emcee", ylab = "Poisson parametrization on dynesty", pch = 20, las = 1, main = paste("Q-Q plot of", param_name[i]))
+  abline(a = 0, b = 1, col = "red")
+}
+comparison_int_dyem <- function(i) {
+  qqplot(emcee_int_thin_flat[, i], t_dynesty_sample[, i], xlab = "NegBin parametrization on emcee", ylab = "Poisson parametrization on dynesty", pch = 20, las = 1, main = paste("Q-Q plot of", param_name[i]))
+  abline(a = 0, b = 1, col = "red")
+}
+pdf("simple/integrated_emcee/joint_emcee_results/puregamma/dyemQQplots.pdf")
+sapply(1:4, comparison_dyem)
+dev.off()
+pdf("simple/integrated_emcee/joint_emcee_results/puregamma/dy_intemQQplots.pdf")
+sapply(1:4, comparison_int_dyem)
+dev.off()
+sink(file = paste0(getwd(), "/simple/integrated_emcee/joint_emcee_results/dyemKStest.txt"))
+sapply(1:4, function(i) ks.test(emcee_thin_flat[, i], t_dynesty_sample[, i]))
+sink()
+sink(file = paste0(getwd(), "/simple/integrated_emcee/joint_emcee_results/dy_intemKStest.txt"))
+sapply(1:4, function(i) ks.test(emcee_int_thin_flat[, i], t_dynesty_sample[, i]))
+sink()
+
+# emcee's vs int_dynesty
+comparison_intdyem <- function(i) {
+  qqplot(emcee_thin_flat[, i], t_int_dynesty_sample[, i], xlab = "full emcee", ylab = "full dynesty", pch = 20, las = 1, main = paste("Q-Q plot of", param_name[i]))
+  abline(a = 0, b = 1, col = "red")
+}
+comparison_int_intdyem <- function(i) {
+  qqplot(emcee_int_thin_flat[, i], t_int_dynesty_sample[, i], xlab = "marginal emcee", ylab = "Poisson parametrization on dynesty", pch = 20, las = 1, main = paste("Q-Q plot of", param_name[i]))
+  abline(a = 0, b = 1, col = "red")
+}
+pdf("simple/integrated_emcee/joint_emcee_results/puregamma/intdy_emQQplots.pdf")
+sapply(1:4, comparison_intdyem)
+dev.off()
+pdf("simple/integrated_emcee/joint_emcee_results/puregamma/intdy_intemQQplots.pdf")
+sapply(1:4, comparison_int_intdyem)
+dev.off()
+sink(file = paste0(getwd(), "/simple/integrated_emcee/joint_emcee_results/intdy_emKStest.txt"))
+sapply(1:4, function(i) ks.test(emcee_thin_flat[, i], t_int_dynesty_sample[, i]))
+sink()
+sink(file = paste0(getwd(), "/simple/integrated_emcee/joint_emcee_results/intdy_intemKStest.txt"))
+sapply(1:4, function(i) ks.test(emcee_int_thin_flat[, i], t_int_dynesty_sample[, i]))
+sink()
+
+# dynesty vs int_dynesty
+comparison_dy_intdy <- function(i) {
+  qqplot(t_int_dynesty_sample[, i], t_dynesty_sample[, i], xlab = "NegBin parametrization on dynesty", ylab = "Poisson parametrization on dynesty", pch = 20, las = 1, main = paste("Q-Q plot of", param_name[i]))
+  abline(a = 0, b = 1, col = "red")
+}
+
+pdf("simple/integrated_emcee/joint_emcee_results/dy_intdyQQplots.pdf")
+sapply(1:4, comparison_dy_intdy)
+dev.off()
+sink(file = paste0(getwd(), "/simple/integrated_emcee/joint_emcee_results/dy_intdyKStest.txt"))
+sapply(1:4, function(i) ks.test(t_int_dynesty_sample[, i], t_dynesty_sample[, i]))
+sink()
+
+
+comparison_dy_intdy_nolog <- function(i) {
+  qqplot(int_dynesty_sample[, i], dynesty_sample[, i], xlab = "NegBin parametrization on dynesty", ylab = "Poisson parametrization on dynesty", pch = 20, las = 1, main = paste("Q-Q plot of", param_name_nolog[i]))
+  abline(a = 0, b = 1, col = "red")
+}
+sapply(1:4, comparison_dy_intdy_nolog)
+```
+
+```{r joint_ppplot}
+source("pp_plot_fct.R")
+pp_plot_fct(t_int_dynesty_sample[, 4], t_dynesty_sample[, 4], 
+            xlab = "marginal dynesty", ylab = "full dynesty",
+            main = "P-P plot on log xi")
+```
+
+```{r saving_posterior}
+RDSlist <- list("simulated_data" = py$D,
+                #"posterior_sample" = py$emcee_sample,
+                #"flat_sample" = py$emcee_flat_sample,
+                #"run_time" = py$emcee_run_time,
+                #"int_posterior_sample" = py$emcee_int_sample,
+                #"int_flat_sample" = py$emcee_int_flat_sample,
+                #"int_run_time" = py$emcee_int_run_time,
+                "dynesty_sample" = py$dynesty_sample,
+                "dy_run_time" = py$dynesty_run_time,
+                "int_dynesty_sample" = py$int_dynesty_sample,
+                "int_dy_run_time" = py$int_dynesty_run_time)
+saveRDS(RDSlist, file = "results.RDS")
+```
+
+```{r Lazhi_sampler_sample}
+Lazhi_Lambda_star <- Lambdastar_simulator(n = 1000, pid, theta_star = theta_star)
+Lazhi_obs <- simulator(n = 1000, Lambda_stars = Lazhi_Lambda_star, xi = xi)
+
+source("Lazhi_posterior_sampler.R")
+T0 <- 20000
+Lazhi_iterations <- 150000
+set.seed(42)
+Lazhi_sample <- Lazhi_simulator(iterations = T0 + Lazhi_iterations,
+                                t_init = c(t_mu, t_theta, t_pid, t_xi),
+                                D = Lazhi_obs, A = A, Time = Time, a = a, r = R, e = e)
+Lazhi_mcmc <- mcmc(data = Lazhi_sample, end = nrow(Lazhi_sample), start = T0 + 1)
+Lazhi_mcmc[, 3] <- logit(Lazhi_mcmc[, 3])
+
+###############
+# analysis of Lazhi sample
+layout(rbind(c(0, 11, 11, 11, 11, 11),
+             c(12, 0, 1, 20, 20, 0),
+             c(13, 0, 5, 2, 0, 0),
+             c(14, 0, 6, 8, 3, 0),
+             c(15, 0, 7, 9, 10, 4),
+             c(0, 0, 16, 17, 18, 19)),
+       width = c(lcm(2), lcm(2), 1, 1, 1, 1),
+       height = c(lcm(2), 1, 1, 1, 1, lcm(3)))
+par(mar = rep(0, 4), las = 1, cex = 1, tck = 0.01)
+sapply(1:3, function(i) {
+  plot(density(Lazhi_mcmc[, i]), main = "", xlab = "", ylab = "", xaxt = "n", yaxt = "n")
+  abline(v = true_values[i], col = "red")
+})
+cont = seq(5, 95, by = 10)
+plot(density(Lazhi_mcmc[, 4]), main = "", xlab = paste("log", expression(xi)), ylab = "", yaxt = "n")
+abline(v = true_values[4], col = "red")
+emcee_kde <- kde(Lazhi_mcmc[, index_mat[1, ]])
+plot(emcee_kde, display = "filled.contour", cont = cont, col.fun = viridis::viridis,
+     xlab = "", ylab = paste("log", expression(theta)), xaxt = "n")
+plot(emcee_kde, cont = cont, display = "slice", add = TRUE)
+emcee_kde <- kde(Lazhi_mcmc[, index_mat[2, ]])
+plot(emcee_kde, display = "filled.contour", cont = cont, col.fun = viridis::viridis,
+     xlab = "", ylab = paste("logit", expression(pi)), xaxt = "n")
+plot(emcee_kde, cont = cont, display = "slice", add = TRUE)
+emcee_kde <- kde(Lazhi_mcmc[, index_mat[3, ]])
+plot(emcee_kde, display = "filled.contour", cont = cont, col.fun = viridis::viridis,
+     xlab = paste("log", expression(mu)), ylab = paste("log", expression(xi)))
+plot(emcee_kde, cont = cont, display = "slice", add = TRUE)
+emcee_kde <- kde(Lazhi_mcmc[, index_mat[4, ]])
+plot(emcee_kde, display = "filled.contour", cont = cont, col.fun = viridis::viridis,
+     xlab = "", ylab = "", xaxt = "n", yaxt = "n")
+plot(emcee_kde, cont = cont, display = "slice", add = TRUE)
+emcee_kde <- kde(Lazhi_mcmc[, index_mat[5, ]])
+plot(emcee_kde, display = "filled.contour", cont = cont, col.fun = viridis::viridis,
+     xlab = paste("log", expression(theta)), ylab = "", yaxt = "n")
+plot(emcee_kde, cont = cont, display = "slice", add = TRUE)
+emcee_kde <- kde(Lazhi_mcmc[, index_mat[6, ]])
+plot(emcee_kde, display = "filled.contour", cont = cont, col.fun = viridis::viridis,
+     xlab = paste("logit", expression(pi)), ylab = "", yaxt = "n")
+plot(emcee_kde, cont = cont, display = "slice", add = TRUE)
+#mtext("Density and contour plots of parameters", cex = 1.5, font = 2, outer = TRUE)
+psrt = 60
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.25, "Density and contour plots of parameters", cex = 1.3, font = 2)
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("log("*mu*")"), srt = psrt)
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("log("*theta*")"), srt = psrt)
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("logit("*pi[d]*")"), srt = psrt)
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("log("*xi*")"), srt = psrt)
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("log("*mu*")"))
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("log("*theta*")"))
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5,  expression("logit("*pi[d]*")"))
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.5, expression("log("*xi*")"))
+plot.new()
+plot.window(xlim = c(0, 1), ylim = c(0, 1))
+text(0.5, 0.75, "Poisson parametrization", font = 2, cex = 1.1)
+
+#################################
+# Lazhi sampler vs. original model emcee
+comparison_original_Lazhi_qq <- function(i) {
+  qqplot(emcee_thin_flat[, i], Lazhi_mcmc[, i], xlab = "Poisson parametrization on emcee", ylab = "Poisson parametrization on Gibbs(Lazhi)", pch = 20, las = 1, main = paste("Q-Q plot of", param_name[i]))
+  abline(a = 0, b = 1, col = "red")
+}
+pdf("simple/integrated_emcee/joint_emcee_results/original_Lazhi_QQplots.pdf")
+sapply(1:4, comparison_original_Lazhi_qq)
+dev.off()
+sink(file = paste0(getwd(), "/simple/integrated_emcee/joint_emcee_results/original_Lazhi_KStest.txt"))
+sapply(1:4, function(i) ks.test(emcee_thin_flat[, i], Lazhi_mcmc[, i]))
+sink()
+#################################
+# Lazhi sampler vs. NegBin parametrization emcee
+comparison_marginal_Lazhi_qq <- function(i) {
+  qqplot(emcee_int_thin_flat[, i], Lazhi_mcmc[, i], xlab = "NegBin parametrization on emcee", ylab = "Poisson parametrization on Gibbs(Lazhi)", pch = 20, las = 1, main = paste("Q-Q plot of", param_name[i]))
+  abline(a = 0, b = 1, col = "red")
+}
+pdf("simple/integrated_emcee/joint_emcee_results/marginal_Lazhi_QQplots.pdf")
+sapply(1:4, comparison_marginal_Lazhi_qq)
+dev.off()
+sink(file = paste0(getwd(), "/simple/integrated_emcee/joint_emcee_results/marginal_Lazhi_KStest.txt"))
+sapply(1:4, function(i) ks.test(emcee_int_thin_flat[, i], Lazhi_mcmc[, i]))
+sink()
+```
+
+```{r conditioning_but_mu}
+library(lamW)
+# simulate Lambda(star)
+set.seed(42)
+t_Lambda <- log(py$Lambda_stars) - log(R*e*Time)
+obs_D <- py$D
+
+t_logLambdaprior_gamma_test <- function(t_Lambda, # log(Lambda)
+                                   t_mu, # log(mu)
+                                   t_theta, # log(theta)
+                                   t_pid # logit(pid)
+) {
+  Lambda <- lambertW0(exp(t_Lambda))
+  mu <- exp(t_mu)
+  theta <- exp(t_theta)
+  pid <- invlogit(t_pid)
+  print(sapply(Lambda, 
+                         function(i) logplus(log(pid) + logdeltafunction(i),
+                                             log(1 - pid) + dgamma(x = i,
+                                                                   shape = exp(2 * t_mu - t_theta),
+                                                                   rate = exp(t_mu - t_theta),
+                                                                   log = TRUE))))
+  
+  exp(sum(t_Lambda)) + sapply(Lambda, 
+                         function(i) logplus(log(pid) + logdeltafunction(i),
+                                             log(1 - pid) + dgamma(x = i,
+                                                                   shape = exp(2 * t_mu - t_theta),
+                                                                   rate = exp(t_mu - t_theta),
+                                                                   log = TRUE))) |> sum() #Jacobian:prod(Lambda) => log Jacobian:sum(t_Lambda)
+}
+
+t_logLambdaprior_gamma_tt <- function(t_Lambda, # log(Lambda)
+                                   t_mu_vec, # log(mu)
+                                   t_theta, # log(theta)
+                                   t_pid # logit(pid)
+) {
+  sapply(t_mu_vec, t_logLambdaprior_gamma_test, t_Lambda = t_Lambda, t_theta = t_theta, t_pid = t_pid)
+}
+
+t_mu_vec = seq(-11, 0, by = 0.01)
+xx = seq(-1, 1, by = 0.1)
+plot(xx, t_logLambdaprior_gamma_tt(t_Lambda, t_mu + xx, t_theta, t_pid), type = "l")
+t_logLambdaprior_gamma_test(t_Lambda, t_mu, t_theta, t_pid)
+t_logpostker_gamma(t_mu = t_mu, t_theta = t_theta, t_pid = t_pid, t_xi = t_xi, t_Lambda = t_Lambda, D = obs_D, A = A, Time = Time, a = a, r = R, e = e)
+```
+
+```{python repeating_runs}
+simulation_runs = 10
+nsteps = 20000
+
+# results storing
+emcee_t_inclusion_67, emcee_t_inclusion_95, emcee_t_int_inclusion_67, emcee_t_int_inclusion_95 = np.empty((simulation_runs, 4)), np.empty((simulation_runs, 4)), np.empty((simulation_runs, 4)), np.empty((simulation_runs, 4))
+
+emcee_t_mu_inclusion_67, emcee_t_mu_inclusion_95, emcee_t_theta_inclusion_67, emcee_t_theta_inclusion_95, emcee_t_pid_inclusion_67, emcee_t_pid_inclusion_95, emcee_t_xi_inclusion_67, emcee_t_xi_inclusion_95, int_emcee_t_mu_inclusion_67, int_emcee_t_mu_inclusion_95, int_emcee_t_theta_inclusion_67, int_emcee_t_theta_inclusion_95, int_emcee_t_pid_inclusion_67, int_emcee_t_pid_inclusion_95, int_emcee_t_xi_inclusion_67, int_emcee_t_xi_inclusion_95 = [3] * simulation_runs, [3] * simulation_runs, [3] * simulation_runs, [3] * simulation_runs, [3] * simulation_runs, [3] * simulation_runs, [3] * simulation_runs, [3] * simulation_runs, [3] * simulation_runs, [3] * simulation_runs, [3] * simulation_runs, [3] * simulation_runs, [3] * simulation_runs, [3] * simulation_runs, [3] * simulation_runs, [3] * simulation_runs
+
+# running
+np.random.seed(42)
+for i in range(0, simulation_runs):
+  # simulate data
+  D = np.array(r.simulator(n = n, Lambda_stars = Lambda_stars, xi = xi))
+  
+  # emcee
+  emcee_result = emcee_sampler.run_mcmc(t_init, nsteps = nsteps, progress = True,
+  skip_initial_state_check = True)
+  emcee_flat_sample = emcee_sampler.get_chain(flat = True, discard = int(r.burnin), thin = int(r.thinning))
+  for j in np.arange(4):
+    emcee_q = r.quantile(emcee_flat_sample[:, j], probs = r.cbind(0.025, 0.165, 0.835, 0.975))
+    emcee_t_inclusion_67[i, j] = emcee_q[1] <= t_mu and t_mu <= emcee_q[2]
+    emcee_t_inclusion_95[i, j] = emcee_q[0] <= t_mu and t_mu <= emcee_q[3]
+  
+  
+  # integrated emcee
+  emcee_int_result = emcee_int_sampler.run_mcmc(t_int_init, nsteps = nsteps, progress = True,
+  skip_initial_state_check = True)
+  emcee_int_flat_sample = emcee_int_sampler.get_chain(flat = True, discard = int(r.burnin), thin = int(r.thinning))
+  for j in np.arange(4):
+    emcee_q = r.quantile(emcee_int_flat_sample[:, j], probs = r.cbind(0.025, 0.165, 0.835, 0.975))
+    emcee_t_int_inclusion_67[i, j] = emcee_q[1] <= t_mu and t_mu <= emcee_q[2]
+    emcee_t_int_inclusion_95[i, j] = emcee_q[0] <= t_mu and t_mu <= emcee_q[3]
+
+```
+
+```{r prior_sampling}
+library(LaplacesDemon)
+library(Rcpp)
+sourceCpp("logsum.cpp")
+source(paste0(getwd(), "/numerical_integration.R"))
+emcee_results_list <- readRDS(file = paste0(getwd(), "/simple/emcee/results/emcee_result.RDS"))
+set.seed(42)
+# prior sampling comparison
+prior_sample <- prior_sampling(sample_size = 1000)
+plot(density(log(prior_sample[, 1])))
+abline(v = t_mu, col = "red")
+plot(density(log(prior_sample[, 2])))
+abline(v = t_theta, col = "red")
+analytical_integral_evaluation <- numerical_integral_evaluation <- rep(NA, length = nrow(prior_sample))
+for (i in 1:nrow(prior_sample)) {
+  analytical_integral_evaluation[i] <- analytical(t_mu = log(prior_sample[i, 1]), t_theta = log(prior_sample[i, 2]), t_pid = logit(prior_sample[i, 3]), t_xi = log(prior_sample[i, 4]), D = emcee_results_list$simulated_data, A = A, Time = Time, a = a, r = R, e = e)
+  numerical_integral_evaluation[i] <- numerical(t_mu = log(prior_sample[i, 1]), t_theta = log(prior_sample[i, 2]), t_pid = logit(prior_sample[i, 3]), t_xi = log(prior_sample[i, 4]), Lambda = seq(0, 5e-4, by = 1e-9),
+                                                x = emcee_results_list$simulated_data[length(emcee_results_list$simulated_data)], y = emcee_results_list$simulated_data[-length(emcee_results_list$simulated_data)], A = A, Time = Time, a = a, r = R, e = e)
+  print(paste("iteration", i))
+}
+ks.test(analytical_integral_evaluation, numerical_integral_evaluation)
+integral_ratio <- analytical_integral_evaluation / numerical_integral_evaluation
+numerical_integral_evaluation[which.max(integral_ratio)]
+analytical_integral_evaluation[which.max(integral_ratio)]
+prior_sample[which.max(integral_ratio), ]
+plot(density(integral_ratio))
+plot(log(prior_sample[, 1]), integral_ratio, pch = 20)
+plot(log(prior_sample[, 1]), analytical_integral_evaluation, pch = 20)
+plot(log(prior_sample[, 1]), numerical_integral_evaluation, pch = 20)
+plot(integral_ratio, analytical_integral_evaluation, pch = 20, xlim = c(1, 1.0000001))
+plot(numerical_integral_evaluation, integral_ratio, pch = 20, xlim = c(-2e8, 0))
+
+pdf("meeting_shared/23Nov2023/integralQQ1000.pdf")
+qqplot(analytical_integral_evaluation, numerical_integral_evaluation, pch = 20,
+       xlab = "analytical results", ylab = "numerical results",
+       main = "NegBin parametrization evaluated at a prior sample",
+       sub = "zoom in",
+       xlim = c(-2e7, 0), ylim = c(-2e7, 0))
+abline(a = 0, b = 1, col = "red")
+qqplot(analytical_integral_evaluation, numerical_integral_evaluation, pch = 20,
+       xlab = "analytical results", ylab = "numerical results",
+       main = "NegBin parametrization evaluated at a prior sample",
+       sub = "zoom in",
+       xlim = c(-2e8, 0), ylim = c(-2e8, 0))
+abline(a = 0, b = 1, col = "red")
+qqplot(analytical_integral_evaluation, numerical_integral_evaluation, pch = 20,
+       xlab = "analytical results", ylab = "numerical results",
+       main = "NegBin parametrization evaluated at a prior sample",
+       sub = "overall")
+abline(a = 0, b = 1, col = "red")
+dev.off()
+
+```
+
+```{python debug}
+for i in tqdm(range(int(9e6))):
+    pass
+#import numpy as np
+#from scipy.stats import dgamma, dpoisson, dbeta, dcauchy
+
+def logpostker_unified_gamma(zeta, D = D, A = int(r.A), Time = int(r.Time), 
+                              a = a,
+                              R = R,
+                              e = e):
+    # Check if zeta is a matrix or a vector
+    if len(zeta.shape) == 1:
+        # If zeta is a vector, extract individual components
+        mu, theta, pid, xi = zeta[:4]
+        Lambda = zeta[4:]
+    else:
+        # If zeta is a matrix, iterate over rows
+        results = []
+        for row in zeta:
+            mu, theta, pid, xi = row[:4]
+            Lambda = row[4:]
+            l = r.logpostker_gamma(mu, theta, pid, xi, Lambda, D, A, Time, a, R, e)
+            results.append(l)
+        return np.array(results)
+    
+    # Call the R-like logpostker_gamma function with individual components
+    return r.logpostker_gamma(mu, theta, pid, xi, Lambda, D, A, Time, a, R, e)
+
+# Rest of your code remains unchanged
+
+
+# Rest of your code remains unchanged
+
+
+np.random.seed(42)
+nwalkers = int(2 * (r.n + 4))
+ndim = r.n + 4
+
+truevals = np.array([mu, theta, pid, r.xi] * nwalkers)
+truevals = np.multiply(truevals.reshape((int(nwalkers), 4)), np.random.rand(nwalkers, 4))
+lambs = r.rgamma(n=r.n * nwalkers, shape=mu**2 / theta, rate=mu / theta)
+lambs = np.expand_dims(np.array(lambs), axis=-1)
+lambs = lambs.reshape((int(nwalkers), int(r.n)))
+init = np.hstack((truevals, lambs))
+
+print("Init shape:", init.shape)
+print("Data type of init:", type(init))
+print("Shape of init:", init.shape)
+
+
+# Call the function with the initial parameters
+logpostker_unified_gamma(np.array(init), D=D, A=r.A, Time=r.Time, a=a, R=R, e=e)
+
+```
+
+```{python short_emcee}
+short_n = 3
+
+
+def log_postker_unified_gamma(zeta, # should be an np array
+                             D = D, A = A, Time = Time, 
+                              a = a,
+                              R = R,
+                              e = e
+                              #means = None, stds = None
+                             ):
+    # reshape the parameter space input if necessary
+    if len(np.shape(zeta)) == 1:
+      zeta = zeta.reshape((1, len(zeta)))
+    
+    D = np.array(D)
+    A = np.array(A)
+    Time = np.array(Time)
+    a = np.array(a)
+    R = np.array(R)
+    e = np.array(e)
+    return(r.logpostker_unified_gamma(zeta,
+                               D = D,
+                               A = A,
+                               Time = Time,
+                               a = r.unlist(a),
+                               R = r.unlist(R), 
+                               e = r.unlist(e)
+                               #means = means,
+                               #stds = stds
+                               ))
+np.random.seed(42)
+nwalkers = int(2 * (r.n + 4))
+ndim = r.n + 4
+emcee_sampler = emcee.EnsembleSampler(
+  nwalkers = nwalkers,
+  ndim = ndim,
+  log_prob_fn = t_log_postker_unified_gamma,
+  vectorize = True
+  #args = D
+)
+
+# original scale true values
+truevals = np.array([mu, theta, pid, r.xi] * nwalkers)
+truevals = np.multiply(truevals.reshape((int(nwalkers), 4)), np.random.rand(nwalkers, 4))
+lambs = r.rgamma(n = r.n * nwalkers, shape = mu**2 / theta, rate = mu / theta)
+lambs = np.expand_dims(np.array(lambs), axis = -1)
+lambs = lambs.reshape((int(nwalkers), int(r.n)))
+init = np.hstack((truevals, lambs))
+
+#initmean = np.mean(init, axis=0)
+#initstd = np.std(init, axis=0)
+#init_standardized = (init - initmean) / initstd
+
+# transformed scale true values
+# hyperparameters
+turb_scale = 2
+turb_mu = r.rnorm(n = nwalkers, mean = t_mu, sd = np.abs((t_mu + 1) / turb_scale))
+turb_mu = np.expand_dims(np.array(turb_mu), axis = -1)
+turb_theta = r.rnorm(n = nwalkers, mean = t_theta, sd = np.abs((t_theta + 1) / turb_scale))
+turb_theta = np.expand_dims(np.array(turb_theta), axis = -1)
+turb_pid = r.rnorm(n = nwalkers, mean = t_pid, sd = np.abs((t_pid + 1) / turb_scale))
+turb_pid = np.expand_dims(np.array(turb_pid), axis = -1)
+turb_xi = r.rnorm(n = nwalkers, mean = t_xi, sd = np.abs((t_xi + 1) / turb_scale))
+turb_xi = np.expand_dims(np.array(turb_xi), axis = -1)
+
+# lambdas
+#large_random_order = 1.1
+# for the ones with lambda > 0
+#t_lambs_indicator = Lambda_stars == 0
+#t_lambs = r.rnorm(n = nwalkers * r.n, mean = np.max(Lambda_stars), sd = np.abs(np.max(Lambda_stars + 1) / turb_scale))
+#t_lambs = np.expand_dims(np.array(t_lambs), axis = -1)
+#t_lambs = t_lambs.reshape((int(nwalkers), int(r.n)))
+# for the ones with lambda = 0 (true value = -infinity)
+#large_neg_random = -np.random.rand(int(nwalkers * np.sum(t_lambs_indicator))) * 10**(large_random_order * np.random.rand(int(nwalkers * np.sum(t_lambs_indicator)))) # order should not exceed the order of sys.float_info.max
+#large_neg_random = np.expand_dims(np.array(large_neg_random), axis = -1)
+#large_neg_random = large_neg_random.reshape((int(nwalkers), np.sum(t_lambs_indicator)))
+#t_lambs[:, t_lambs_indicator] = large_neg_random
+
+t_lambs = np.log(r.rgamma(n = r.n * nwalkers, shape = mu**2 / theta, rate = mu / theta))
+t_lambs = np.expand_dims(np.array(t_lambs), axis = -1)
+t_lambs = t_lambs.reshape((int(nwalkers), int(r.n)))
+
+t_init = np.hstack((turb_mu, turb_theta, turb_pid, turb_xi, t_lambs))
+
+# testing the posterior kernel function in python
+t_log_postker_unified_gamma(zeta = t_init, D = D)
+t_log_postker_unified_gamma(t_init[[1], :], D = D)
+
+
+#warnings.filterwarnings("ignore")
+#HDFbackend = emcee.backends.HDFBackend("emcee_chains")
+r.tic()
+emcee_result = emcee_sampler.run_mcmc(t_init, nsteps = 200, progress = True,
+  skip_initial_state_check = True)
+emcee_run_time = r.toc()
+
+emcee_sample = emcee_sampler.get_chain()
+t_log_postker_unified_gamma(zeta = emcee_result.coords, D = D)
+emcee_flat_sample = emcee_sampler.get_chain(flat = True)
+emcee_sampler.get_autocorr_time()
+```
+
+```{r testing}
+# testing python function
+logpostker_unified_gamma(py$init, D = py$D,
+                         A = A, Time, a = py$a, R = py$R, e = py$e)
+t_logpostker_unified_gamma(py$t_init, D = py$D,
+                         A = A, Time, a = py$a, R = py$R, e = py$e)
+```
+
+```{python testing}
+def walkers_independent(coords):
+    if not np.all(np.isfinite(coords)):
+        return False
+    C = coords - np.mean(coords, axis=0)[None, :]
+    C_colmax = np.amax(np.abs(C), axis=0)
+    if np.any(C_colmax == 0):
+        return False
+    C /= C_colmax
+    C_colsum = np.sqrt(np.sum(C**2, axis=0))
+    C /= C_colsum
+    return np.linalg.cond(C.astype(float)) <= 1e8
+  
+walkers_independent(np.random.rand(nwalkers, int(r.n) + 4))
+
+int(r.n) + 4
+```
+
+```{python emcee}
+import emcee as dy
+```
+
+```{r jags}
+library(rjags)
+
+BUGSmodel = "model
+{
+for (i in 1 : n) {
+  # likelihood
+  y[i] ~ dpois(rate[i])
+  rate[i] = (a[i] * xi + r[i] * e[i] * lambda[i]) * time
+  x ~ dpois(A * Time * xi)
+  
+  # prior
+theta[i] ~ dgamma(1, 1)
+lambda[i] <- theta[i] * t[i]
+x[i] ~ dpois(lambda[i])
+}
+}
+"
+data = list(t=c(94.3,15.7,62.9,126,5,31.4,1.05,1.05,2.1,10.5,20.5),
+x=c(13,9,6,36,1,5,0,0,0,4,NA),N=11)
+inits2 = list(list(theta=rep(0.9,11)),list(theta=rep(0.5,11)))
+parameters2 = c('theta','x[11]')
+burn_in = 1000
+steps = 5000
+thin = 1
+seed = 42
+foo <- jags.model(textConnection(BUGSmodel2),data=data, inits=inits2,n.chains=2)
+
+```
+
+```{r stan}
+library(rstan)
+options(mc.cores = parallel::detectCores())
+rstan_options(auto_write = TRUE)
+
+example(stan_model, package = "rstan", run.dontrun = TRUE)
+```
+
+```{r profiling}
+import emcee
+import numpy as np
+
+np.random.seed(42)
+
+# Assuming r.n + 4 is the correct number of dimensions for your parameter space
+nwalkers = 32
+ndim = r.n + 4
+
+# Generate your initial positions in the shape (32, r.n + 4)
+init = [mu, theta, pid, r.xi] + r.rgamma(n=r.n, shape=mu**2 / theta, rate=mu / theta)
+init = np.array(init)  # Convert the list to a NumPy array
+init = np.expand_dims(init, axis=-1)  # Add an extra dimension for broadcasting
+
+# Reshape the init array to match the (nwalkers, ndim) format
+init = init.reshape((nwalkers, ndim))
+
+# Create the EnsembleSampler
+emcee_sampler = emcee.EnsembleSampler(
+    nwalkers=nwalkers,
+    ndim=ndim,
+    log_prob_fn=log_postker_unified_gamma
+)
+
+# Run the MCMC sampler
+state = emcee_sampler.run_mcmc(init, 100, progress=True)
+
+
+
+r.logpostker_unified_gamma(zeta,
+                               D = D,
+                               A = r.A,
+                               time = r.Time,
+                               a = r.unlist(a),
+                               r = r.unlist(R), 
+                               e = r.unlist(e))
+```
