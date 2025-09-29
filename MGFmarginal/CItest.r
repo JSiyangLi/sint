@@ -4,11 +4,34 @@ sourceCpp("logsum.cpp")
 source("data.xray.R")
 source("data.optical.R")
 source("design.response.R")
-source("mgf_mle")
+source("mgf.R")
 
 #=================
 # helper functions
 #=================
+loglik_lme.isolated <- function(lparams, SData) {
+  lalpha <- lparams[1]
+  lbeta <- lparams[2]
+  if (
+    any(c(lalpha, lbeta) <= -.Machine$double.xmax) ||
+    any(c(lalpha, lbeta) >= .Machine$double.xmax)
+  ) {
+    return(as.numeric(-1e100))
+  } else {
+    bkgdShape <- 1e-06 + xData$Background$cnt
+    bkgdRates <- xData$Segments$Time * xData$Background$area * (1 + 1e-12)
+    l <- lmgfMarg.isolated(
+      SData,
+      lalpha = lalpha,
+      lbeta = lbeta,
+      Time = oData$Segments$Time,
+      bkgdalpha = bkgdShape,
+      bkgdbeta = bkgdRates
+    )
+    return(l)
+  }
+}
+
 writeAmat <- function(Glist) {
   # Get all unique segments across all sources
   all_segments <- unique(unlist(lapply(Glist, function(x) x[, "segment"])))
@@ -119,14 +142,23 @@ oGData <- yearSplit(oGroup, oSData)
 #testGlist <- summarise_GData(oGData[[6]])
 bkgdShape <- 1e-06 + oData$Background$cnt
 bkgdRates <- oData$Segments$Time * oData$Background$area * (1+1e-12)
-beta  <- exp(lgammamle$par[2])
-beta2 <- bkgdRates
-alpha <- exp(lgammamle$par[1])
-alpha2 <- bkgdShape
 
 # binary overlappings
 length_list <- lapply(oGroup$row_indices, length)
 binary_indices <- which(unlist(length_list) == 3)
+
+# MLE
+# maximum likelihood
+(olgammamle <- optim(par = rep(0, 2), fn = loglik_lme.isolated, SData = oSData,
+                    control = list(fnscale = -1), hessian = TRUE))
+(olgamma_mean <- olgammamle$par[1] - olgammamle$par[2]) # mean
+(olgamma_var <- olgammamle$par[1] - 2 * olgammamle$par[2]) # variance
+(ogamma_sd <- sqrt(exp(olgammamle$par)[1] / exp(olgammamle$par)[2]^2)) # sd
+
+beta  <- exp(olgammamle$par[2])
+beta2 <- bkgdRates
+alpha <- exp(olgammamle$par[1])
+alpha2 <- bkgdShape
 
 set.seed(42)
 iterations <- 1e6
