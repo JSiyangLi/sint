@@ -164,7 +164,7 @@ set.seed(42)
 iterations <- 1e6
 Nseg <- 3
 Nsrc <- 2
-inCI <- boundarySim <- boundaryCI <- rep(NA, length(binary_indices))
+empiricalp <- inCI <- boundarySim <- boundaryCI <- rep(NA, length(binary_indices))
 # iterating over binary overlappings
 for (i in seq_along(binary_indices)) {
   cat("iteration: ", i, "\n")
@@ -302,11 +302,19 @@ for (i in seq_along(binary_indices)) {
   cat("matching frequency", nrow(region_y) / iterations, "\n") # frequency the observed Y happens
   (freqq <- qbinom(c(0.025, 0.975), size = iterations, prob = exp(log_p))) # theoratical exact confidence interval
   cat("CI: ", freqq, "\n")
+  freqp <- pbinom(freqq, size = iterations, prob = exp(log_p))
+  empiricalp[i] <- freqp[2] - freqp[1]
   inCI[i] <- nrow(region_y) >= freqq[1] & nrow(region_y) <= freqq[2] # the frequency Y happens is within the CI
   boundarySim[i] <- nrow(region_y) == 0
   boundaryCI[i] <- freqq[1] == 0
 }
 
-sum(inCI) / length(inCI)
+(inclusionFreq <- sum(inCI) / length(inCI))
 sum(boundarySim) / length(boundarySim)
 sum(boundaryCI) / length(boundaryCI)
+pdf("binaryCItest.pdf", height = 5, width = 5)
+plot(density(empiricalp[empiricalp >= 0.9]), xlab = "confidence level (>=0.9)", main = "Empirical confidence levels")
+abline(v = 0.95, col = "blue")
+abline(v = inclusionFreq, col = "red")
+legend("topleft", legend = c("0.95", "observed"), lty = 1, col = c("blue", "red"))
+dev.off()
