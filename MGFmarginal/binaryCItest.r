@@ -160,7 +160,7 @@ beta2 <- bkgdRates
 alpha <- exp(olgammamle$par[1])
 alpha2 <- bkgdShape
 
-set.seed(42)
+set.seed(2)
 iterations <- 1e6
 Nseg <- 3
 Nsrc <- 2
