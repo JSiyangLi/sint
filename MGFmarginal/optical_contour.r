@@ -4,7 +4,7 @@ library(viridis)
 library(plotly)  # For 3D visualization
 
 tic()
-source("mgf_mle")
+source("mgf_mle.R")
 toc()
 
 ############################
